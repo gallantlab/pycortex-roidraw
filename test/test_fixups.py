@@ -111,28 +111,45 @@ class HelpHintTests(unittest.TestCase):
 
 
 class WheelZoomTests(unittest.TestCase):
-    BROKEN = ("function mousewheel( event ) { if (!event.altKey) { "
-              "this.setRadius(this.radius + this.zoomSpeed * -1 * event.wheelDelta * 50.0); "
-              "this.dispatchEvent( changeEvent ); } }; "
-              "object.addEventListener( 'mousewheel', mousewheel.bind(this), false);")
+    # lescroart-style: !altKey guard, event.wheelDelta * 50.0
+    LESCROART = ("function mousewheel( event ) {\n if (!event.altKey) {\n"
+                 "  this.setRadius(this.radius + this.zoomSpeed * -1 * event.wheelDelta * 50.0);\n"
+                 "  this.dispatchEvent( changeEvent );\n }\n};\n"
+                 "object.addEventListener( 'mousewheel', mousewheel.bind(this), false);")
+    # huth-style: state guard that blocks plain scroll, wrong var name, multiplicative wheelDelta/10
+    HUTH = ("function mousewheel( event ) {\n event.preventDefault();\n"
+            " if ( this._state !== STATE.NONE ) {\n"
+            "  this.setRadius(this.radius * this.zoomSpeed * -1 * wheelEvent.wheelDelta/10.0);\n"
+            "  this.dispatchEvent( changeEvent );\n }\n};\n"
+            "object.addEventListener( 'mousewheel', mousewheel.bind(this), false);")
 
-    def test_switches_to_wheel_and_deltaY(self):
-        out, changed = fix_wheel_zoom(self.BROKEN)
+    def _assert_fixed(self, src):
+        out, changed = fix_wheel_zoom(src)
         self.assertTrue(changed)
-        self.assertNotIn("wheelDelta", out)             # broken delta prop gone
-        self.assertIn("event.deltaY", out)              # standard prop used
-        self.assertIn("firefox", out)                   # Firefox normalization added
-        self.assertIn("'wheel', mousewheel.bind(this)", out)   # standard event
+        self.assertNotIn("wheelDelta", out)                     # broken delta prop gone
+        self.assertIn("event.deltaY", out)                      # standard prop
+        self.assertIn("firefox", out)                           # Firefox normalization
+        self.assertIn("'wheel', mousewheel.bind(this)", out)    # standard event
         self.assertNotIn("'mousewheel', mousewheel.bind", out)
+        self.assertNotIn("_state !== STATE.NONE", out)          # state guard removed (huth)
+        return out
+
+    def test_fixes_lescroart_variant(self):
+        self._assert_fixed(self.LESCROART)
+
+    def test_fixes_huth_variant(self):
+        self._assert_fixed(self.HUTH)
 
     def test_idempotent(self):
-        once, _ = fix_wheel_zoom(self.BROKEN)
+        once = self._assert_fixed(self.HUTH)
         twice, changed = fix_wheel_zoom(once)
         self.assertFalse(changed)
         self.assertEqual(once, twice)
 
     def test_noop_on_already_fixed(self):
-        modern = "object.addEventListener( 'wheel', mousewheel.bind(this), false); var d = event.deltaY;"
+        modern = ("function mousewheel( event ) { var delta = event.deltaY; "
+                  "this.setRadius(this.radius + this.zoomSpeed * delta * 110.0); }; "
+                  "object.addEventListener( 'wheel', mousewheel.bind(this), false);")
         out, changed = fix_wheel_zoom(modern)
         self.assertFalse(changed)
         self.assertEqual(modern, out)

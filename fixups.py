@@ -118,19 +118,38 @@ def add_help_hint(html, snippet=HELP_HINT_SNIPPET, marker='id="%s"' % HELP_HINT_
     return html + snippet, True                         # fallback: viewers without that template
 
 
+# Mirrors the modern viewers' proven working handler exactly (the !event.altKey guard, event.deltaY
+# with the Firefox normalization, and the additive setRadius), so fixed viewers behave identically.
+WORKING_MOUSEWHEEL = (
+    "function mousewheel( event ) {\n"
+    "\t\t\tif (!event.altKey) {\n"
+    "\t\t\t\tvar delta = event.deltaY;\n"
+    "\t\t\t\tif (navigator.userAgent.toLowerCase().indexOf('firefox') > -1) { delta = delta * 18; }\n"
+    "\t\t\t\tthis.setRadius(this.radius + this.zoomSpeed * delta * 110.0);\n"
+    "\t\t\t\tthis.dispatchEvent( changeEvent );\n"
+    "\t\t\t}\n"
+    "\t\t};"
+)
+
+
 def fix_wheel_zoom(html):
-    """Make scroll-wheel zoom work in Firefox. Older viewers bind zoom to the WebKit-only
-    'mousewheel' event using event.wheelDelta (both undefined in Firefox, so scrolling does
-    nothing). Switch to the standard 'wheel' event + event.deltaY, with the same Firefox
-    normalization the modern viewers use. Idempotent; no-op where 'wheel'/deltaY is already used."""
-    new_zoom = ("var delta = event.deltaY; "
-                "if (navigator.userAgent.toLowerCase().indexOf('firefox') > -1) { delta = delta * 18; } "
-                "this.setRadius(this.radius + this.zoomSpeed * delta * 110.0);")
-    out = re.sub(
-        r"this\.setRadius\(\s*this\.radius\s*\+\s*this\.zoomSpeed\s*\*\s*-1\s*\*\s*event\.wheelDelta\s*\*\s*50\.0\s*\)\s*;",
-        lambda m: new_zoom, html, count=1)
+    """Make scroll-wheel zoom work in Firefox. Older viewers' zoom handler is bound to the WebKit-only
+    'mousewheel' event and reads event.wheelDelta (undefined in Firefox); the exact handler varies
+    between viewers (different scale/sign, wrong variable name, or a state guard that blocks a plain
+    scroll). Replace the WHOLE mousewheel handler with the standard 'wheel' + event.deltaY version the
+    modern viewers use (Firefox-normalized), and bind it to 'wheel'. Idempotent; a no-op once the
+    handler already uses deltaY and the binding is 'wheel'."""
+    m = re.search(r"function mousewheel\(\s*event\s*\)\s*\{.*?\}\s*;", html, re.S)
+    handler = m.group(0) if m else ""
+    binding_broken = bool(re.search(r"['\"]mousewheel['\"]\s*,\s*mousewheel\.bind", html))
+    if "wheelDelta" not in handler and not binding_broken:
+        return html, False                              # already standard 'wheel'/deltaY (or no handler)
+    out = html
+    if "wheelDelta" in handler:                          # swap the whole broken handler for the good one
+        out = re.sub(r"function mousewheel\(\s*event\s*\)\s*\{.*?\}\s*;",
+                     lambda mm: WORKING_MOUSEWHEEL, out, count=1, flags=re.S)
     out = re.sub(r"(['\"])mousewheel\1(\s*,\s*mousewheel\.bind\(this\))",
-                 lambda m: "'wheel'" + m.group(2), out, count=1)
+                 lambda mm: "'wheel'" + mm.group(2), out, count=1)   # 'mousewheel' event -> 'wheel'
     return out, out != html
 
 

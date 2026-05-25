@@ -1,0 +1,16 @@
+{
+  "name": "pycortex-roidraw",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pycortex WebGL viewer with in-browser ROI drawing + export. Modular: pure core / viewer adapter / UI.",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "npm run test:js && npm run test:py",
+    "test:js": "node --test test/*.test.js",
+    "test:py": "python3 test/test_bake.py && python3 test/test_fixups.py"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

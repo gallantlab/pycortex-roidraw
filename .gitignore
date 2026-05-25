@@ -1,0 +1,23 @@
+# python build env (used only to generate viewers locally)
+.venv/
+
+# node / bundler
+node_modules/
+dist/
+
+# generated viewer output (large CTM/SVG/data artifacts)
+viewer_out/
+
+# project-local pycortex filestore (fsaverage surfaces, downloaded on demand)
+store/
+
+# python bytecode
+__pycache__/
+*.pyc
+
+# os / editor
+.DS_Store
+*.log
+
+# baked group viewer (built from the public group viewer + bundle)
+group-viewer-out/

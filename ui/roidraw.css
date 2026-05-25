@@ -1,0 +1,60 @@
+/* roidraw UI — class-based styles (no inline style strings in the JS). */
+
+.roidraw-overlay {
+    position: fixed;
+    left: 0;
+    top: 0;
+    pointer-events: none;          /* only captures in draw mode (.roidraw-overlay--active) */
+    z-index: 9998;
+    outline-offset: -2px;
+}
+.roidraw-overlay--active { cursor: crosshair; background: rgba(255, 204, 0, 0.05); outline: 2px dashed rgba(255, 204, 0, 0.8); }
+.roidraw-overlay--inspect { cursor: cell;  background: rgba(80, 160, 255, 0.06); outline: 2px dashed rgba(80, 160, 255, 0.85); }
+
+.roidraw-panel {
+    position: fixed;
+    right: 10px;
+    top: 8px;
+    z-index: 9999;
+    width: 230px;
+    padding: 10px;
+    background: rgba(20, 20, 20, 0.92);
+    color: #eee;
+    font: 12px/1.4 -apple-system, system-ui, sans-serif;
+    border: 1px solid #444;
+    border-radius: 6px;
+}
+.roidraw-panel h2 { font-size: 12px; font-weight: 700; margin: 0 0 6px; }
+.roidraw-panel button { width: 100%; margin-bottom: 6px; }
+.roidraw-panel input[type="file"] { width: 100%; }
+.roidraw-panel label { display: block; margin-bottom: 4px; }
+
+.roidraw-status { margin-bottom: 6px; }
+.roidraw-status--ok    { color: #9f9; }
+.roidraw-status--warn  { color: #f99; }
+.roidraw-status--draw  { color: #ffcc00; }
+.roidraw-status--inspect { color: #6cf; }
+
+.roidraw-list { margin-bottom: 6px; }
+.roidraw-list__empty { color: #777; }
+.roidraw-roi { display: flex; align-items: center; gap: 4px; margin: 2px 0; }
+.roidraw-roi__swatch { width: 10px; height: 10px; display: inline-block; border-radius: 2px; }
+.roidraw-roi__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.roidraw-roi__count { color: #999; }
+.roidraw-roi__del { color: #f77; text-decoration: none; cursor: pointer; }
+
+.roidraw-msg { color: #9cf; font-size: 11px; max-height: 110px; overflow: auto; word-break: break-word; }
+
+.roidraw-modebar {
+    position: fixed;
+    right: 264px;                  /* refined to sit left of the control panel at runtime */
+    top: 8px;
+    z-index: 10001;
+    display: flex;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+    font: 600 12px -apple-system, system-ui, sans-serif;
+}
+.roidraw-modebtn { border: 0; padding: 7px 16px; cursor: pointer; color: #eee; background: #333; }
+.roidraw-modebtn--active { background: #1a7f37; }

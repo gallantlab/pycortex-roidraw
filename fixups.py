@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-fixups.py — correct two long-standing pycortex static-viewer UI bugs in a built viewer's HTML.
+fixups.py — correct three long-standing pycortex static-viewer UI bugs in a built viewer's HTML.
 Complementary to bake.py; reusable on any pycortex static viewer.
 
   1. Help-menu key CASE — pycortex's help generator runs `key.toUpperCase()` on every shortcut,
@@ -10,6 +10,9 @@ Complementary to bake.py; reusable on any pycortex static viewer.
      the modifier label ("shift" -> "Shift").
   2. Help-menu POSITION — pycortex pins #helpmenu to the left edge (left:0%), where its lower half
      hides behind the lower-left legend. We center it horizontally.
+  3. Help-menu FONT — #helpmenu sets no font-family, so the panel falls back to the browser-default
+     serif (Times in Firefox) while the rest of the viewer UI is sans-serif. We give it an explicit
+     sans-serif so it matches.
 
 These edit the viewer's OWN embedded JS/CSS (a source-level fix of the artifact) — not runtime
 overrides. Pure transforms below; unit-tested in test/test_fixups.py.
@@ -42,10 +45,33 @@ def center_help_menu(html):
     return out, out != html
 
 
+HELP_MENU_FONT = "Helvetica, Arial, sans-serif"
+
+
+def set_help_menu_font(html, font=HELP_MENU_FONT):
+    """Give #helpmenu an explicit sans-serif font-family (it ships with none, so the panel falls
+    back to the browser-default serif). Idempotent; scoped to the #helpmenu rule, and a no-op if
+    a font-family is already set there."""
+    def repl(m):
+        open_, body, close = m.group(1), m.group(2), m.group(3)
+        if "font-family" in body:
+            return m.group(0)                              # already set; leave it
+        decl = "\n    font-family:%s;" % font
+        end = body.find(";", body.find("font-size:")) if "font-size:" in body else -1
+        if end != -1:
+            body = body[:end + 1] + decl + body[end + 1:]  # place it beside the font-size decl
+        else:
+            body = decl + body
+        return open_ + body + close
+    out = re.sub(r"(#helpmenu\s*\{)([^}]*)(\})", repl, html, count=1)
+    return out, out != html
+
+
 def apply_fixups(html):
     html, c1 = fix_help_key_case(html)
     html, c2 = center_help_menu(html)
-    return html, (c1 or c2)
+    html, c3 = set_help_menu_font(html)
+    return html, (c1 or c2 or c3)
 
 
 def main():

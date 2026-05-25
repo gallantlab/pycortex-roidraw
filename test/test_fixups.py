@@ -140,6 +140,26 @@ class WheelZoomTests(unittest.TestCase):
     def test_fixes_huth_variant(self):
         self._assert_fixed(self.HUTH)
 
+    # retinotopy-style: handler delegates to a separate multiplicative wheelzoom(wheelEvent) method
+    RETINOTOPY = ("function mousewheel( event ) { this.wheelzoom( event ); this.setCamera(); };\n"
+                  "var c = { wheelzoom: function( wheelEvent ) {\n"
+                  "  var factor = 1.0 + this.zoomSpeed * -1 * wheelEvent.wheelDelta/10.0;\n"
+                  "  this.radius *= factor;\n} };\n"
+                  "this.domElement.addEventListener( 'mousewheel', mousewheel.bind(this), false);")
+
+    def test_fixes_retinotopy_wheelzoom_variant(self):
+        out, changed = fix_wheel_zoom(self.RETINOTOPY)
+        self.assertTrue(changed)
+        self.assertNotIn("wheelDelta", out)                  # broken prop gone
+        self.assertIn("wheelEvent.deltaY", out)              # standard prop in wheelzoom
+        self.assertIn("firefox", out)                        # Firefox normalization
+        self.assertIn("this.radius *= factor", out)          # multiplicative structure preserved
+        self.assertIn("'wheel', mousewheel.bind(this)", out) # standard event
+        self.assertNotIn("'mousewheel', mousewheel.bind", out)
+        # idempotent
+        twice, c2 = fix_wheel_zoom(out)
+        self.assertFalse(c2)
+
     def test_idempotent(self):
         once = self._assert_fixed(self.HUTH)
         twice, changed = fix_wheel_zoom(once)

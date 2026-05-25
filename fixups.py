@@ -132,22 +132,38 @@ WORKING_MOUSEWHEEL = (
 )
 
 
+def _fix_wheelzoom_body(m):
+    """Rewrite an older controls' wheelzoom(wheelEvent) body to read wheelEvent.deltaY (Firefox-safe,
+    correct sign) instead of WebKit-only wheelEvent.wheelDelta, keeping its multiplicative zoom."""
+    return (m.group(1) +
+            "\n\t\t\tvar delta = wheelEvent.deltaY;" +
+            "\n\t\t\tif (navigator.userAgent.toLowerCase().indexOf('firefox') > -1) { delta = delta * 18; }" +
+            "\n\t\t\tvar factor = 1.0 + this.zoomSpeed * delta / 10.0;" +
+            "\n\t\t\tthis.radius *= factor;\n\t\t" +
+            m.group(3))
+
+
 def fix_wheel_zoom(html):
-    """Make scroll-wheel zoom work in Firefox. Older viewers' zoom handler is bound to the WebKit-only
-    'mousewheel' event and reads event.wheelDelta (undefined in Firefox); the exact handler varies
-    between viewers (different scale/sign, wrong variable name, or a state guard that blocks a plain
-    scroll). Replace the WHOLE mousewheel handler with the standard 'wheel' + event.deltaY version the
-    modern viewers use (Firefox-normalized), and bind it to 'wheel'. Idempotent; a no-op once the
-    handler already uses deltaY and the binding is 'wheel'."""
+    """Make scroll-wheel zoom work in Firefox. Older viewers' zoom is bound to the WebKit-only
+    'mousewheel' event and reads .wheelDelta (undefined in Firefox). The exact code varies between
+    viewers: an inline mousewheel handler (huth/lescroart — different scale/sign, or a state guard
+    that blocks a plain scroll), or a separate wheelzoom(wheelEvent) method (retinotopy). Replace the
+    inline handler with the proven modern 'wheel'+event.deltaY one; rewrite a wheelzoom() method to use
+    deltaY; and bind to 'wheel'. Firefox-normalized. Idempotent; a no-op once nothing reads wheelDelta
+    and the binding is 'wheel'."""
     m = re.search(r"function mousewheel\(\s*event\s*\)\s*\{.*?\}\s*;", html, re.S)
     handler = m.group(0) if m else ""
     binding_broken = bool(re.search(r"['\"]mousewheel['\"]\s*,\s*mousewheel\.bind", html))
-    if "wheelDelta" not in handler and not binding_broken:
+    wheelzoom_broken = bool(re.search(r"wheelzoom\s*:\s*function\s*\(\s*wheelEvent\s*\)\s*\{[^}]*wheelDelta", html))
+    if "wheelDelta" not in handler and not binding_broken and not wheelzoom_broken:
         return html, False                              # already standard 'wheel'/deltaY (or no handler)
     out = html
-    if "wheelDelta" in handler:                          # swap the whole broken handler for the good one
+    if "wheelDelta" in handler:                          # inline-handler variant -> the proven handler
         out = re.sub(r"function mousewheel\(\s*event\s*\)\s*\{.*?\}\s*;",
                      lambda mm: WORKING_MOUSEWHEEL, out, count=1, flags=re.S)
+    if wheelzoom_broken:                                 # separate wheelzoom() method variant
+        out = re.sub(r"(wheelzoom\s*:\s*function\s*\(\s*wheelEvent\s*\)\s*\{)([^}]*)(\})",
+                     _fix_wheelzoom_body, out, count=1)
     out = re.sub(r"(['\"])mousewheel\1(\s*,\s*mousewheel\.bind\(this\))",
                  lambda mm: "'wheel'" + mm.group(2), out, count=1)   # 'mousewheel' event -> 'wheel'
     return out, out != html

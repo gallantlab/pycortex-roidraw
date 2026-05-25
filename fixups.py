@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """
-fixups.py — correct three long-standing pycortex static-viewer UI bugs in a built viewer's HTML,
-and add a small "press h for help" discoverability hint. Complementary to bake.py; reusable on any
-pycortex static viewer.
+fixups.py — correct four long-standing pycortex static-viewer UI bugs in a built viewer's HTML,
+and add a small "press h for help" discoverability hint. Complementary to bake.py and add_help.py;
+reusable on any pycortex static viewer.
 
   1. Help-menu key CASE — pycortex's help generator runs `key.toUpperCase()` on every shortcut,
      so a binding like key:'r' (reset/fold) is shown as "R" — which actually means Shift+R (a
@@ -23,8 +23,12 @@ pycortex static viewer.
      DOM once via $(obj).html($('#mriview_html').html()), wiping any static <body> element, so a
      body-level hint would flash and vanish. In the template it's built as part of the viewer and
      just persists. Only when a working help menu exists, so it's never shown on viewers lacking one.
+  5. SCROLL-WHEEL ZOOM (Firefox) — older viewers bind zoom to the WebKit-only `mousewheel` event
+     using `event.wheelDelta` (both undefined in Firefox, so scrolling never zooms). We switch to
+     the standard `wheel` event + `event.deltaY`, with the Firefox normalization the modern viewers
+     already use. (Adding a help menu to viewers that lack one entirely is a separate tool: add_help.py.)
 
-All four edit the viewer's OWN embedded JS/CSS/HTML (a source-level fix of the artifact) — not
+These all edit the viewer's OWN embedded JS/CSS/HTML (a source-level fix of the artifact) — not
 runtime overrides. Pure transforms below; unit-tested in test/test_fixups.py.
 
     python fixups.py <viewer_dir> [--html viewer.html]
@@ -114,16 +118,33 @@ def add_help_hint(html, snippet=HELP_HINT_SNIPPET, marker='id="%s"' % HELP_HINT_
     return html + snippet, True                         # fallback: viewers without that template
 
 
+def fix_wheel_zoom(html):
+    """Make scroll-wheel zoom work in Firefox. Older viewers bind zoom to the WebKit-only
+    'mousewheel' event using event.wheelDelta (both undefined in Firefox, so scrolling does
+    nothing). Switch to the standard 'wheel' event + event.deltaY, with the same Firefox
+    normalization the modern viewers use. Idempotent; no-op where 'wheel'/deltaY is already used."""
+    new_zoom = ("var delta = event.deltaY; "
+                "if (navigator.userAgent.toLowerCase().indexOf('firefox') > -1) { delta = delta * 18; } "
+                "this.setRadius(this.radius + this.zoomSpeed * delta * 110.0);")
+    out = re.sub(
+        r"this\.setRadius\(\s*this\.radius\s*\+\s*this\.zoomSpeed\s*\*\s*-1\s*\*\s*event\.wheelDelta\s*\*\s*50\.0\s*\)\s*;",
+        lambda m: new_zoom, html, count=1)
+    out = re.sub(r"(['\"])mousewheel\1(\s*,\s*mousewheel\.bind\(this\))",
+                 lambda m: "'wheel'" + m.group(2), out, count=1)
+    return out, out != html
+
+
 def apply_fixups(html):
     html, c1 = fix_help_key_case(html)
     html, c2 = center_help_menu(html)
     html, c3 = set_help_menu_font(html)
     html, c4 = add_help_hint(html)
-    return html, (c1 or c2 or c3 or c4)
+    html, c5 = fix_wheel_zoom(html)
+    return html, (c1 or c2 or c3 or c4 or c5)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Fix pycortex help-menu (case + position + font) and add a 'press h for help' hint.")
+    ap = argparse.ArgumentParser(description="Fix pycortex help-menu (case + position + font), the Firefox scroll-zoom bug, and add a 'press h for help' hint.")
     ap.add_argument("viewer_dir", help="the static viewer directory to modify in place")
     ap.add_argument("--html", default="viewer.html", help="viewer HTML file to fix")
     args = ap.parse_args()

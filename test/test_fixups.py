@@ -4,7 +4,9 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from fixups import fix_help_key_case, center_help_menu, set_help_menu_font, add_help_hint  # noqa: E402
+from fixups import (  # noqa: E402
+    fix_help_key_case, center_help_menu, set_help_menu_font, add_help_hint, fix_wheel_zoom,
+)
 
 
 class HelpKeyCaseTests(unittest.TestCase):
@@ -106,6 +108,34 @@ class HelpHintTests(unittest.TestCase):
         twice, changed = add_help_hint(once)
         self.assertFalse(changed)
         self.assertEqual(once, twice)
+
+
+class WheelZoomTests(unittest.TestCase):
+    BROKEN = ("function mousewheel( event ) { if (!event.altKey) { "
+              "this.setRadius(this.radius + this.zoomSpeed * -1 * event.wheelDelta * 50.0); "
+              "this.dispatchEvent( changeEvent ); } }; "
+              "object.addEventListener( 'mousewheel', mousewheel.bind(this), false);")
+
+    def test_switches_to_wheel_and_deltaY(self):
+        out, changed = fix_wheel_zoom(self.BROKEN)
+        self.assertTrue(changed)
+        self.assertNotIn("wheelDelta", out)             # broken delta prop gone
+        self.assertIn("event.deltaY", out)              # standard prop used
+        self.assertIn("firefox", out)                   # Firefox normalization added
+        self.assertIn("'wheel', mousewheel.bind(this)", out)   # standard event
+        self.assertNotIn("'mousewheel', mousewheel.bind", out)
+
+    def test_idempotent(self):
+        once, _ = fix_wheel_zoom(self.BROKEN)
+        twice, changed = fix_wheel_zoom(once)
+        self.assertFalse(changed)
+        self.assertEqual(once, twice)
+
+    def test_noop_on_already_fixed(self):
+        modern = "object.addEventListener( 'wheel', mousewheel.bind(this), false); var d = event.deltaY;"
+        out, changed = fix_wheel_zoom(modern)
+        self.assertFalse(changed)
+        self.assertEqual(modern, out)
 
 
 if __name__ == "__main__":

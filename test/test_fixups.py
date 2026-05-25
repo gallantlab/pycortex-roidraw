@@ -35,6 +35,15 @@ class HelpCenterTests(unittest.TestCase):
         self.assertIn("translate(-50%, -50%)", out)
         self.assertIn(".other { left: 0%; }", out)   # other rules untouched (scoped to #helpmenu)
 
+    def test_centers_topleft_variant_and_leaves_transition(self):
+        rule = "#helpmenu  {\n  top: 10px;\n  left: 10px;\n  transform: none;\n  transition: all .3s;\n}"
+        out, changed = center_help_menu(rule)
+        self.assertTrue(changed)
+        self.assertIn("top: 50%;", out)
+        self.assertIn("left: 50%;", out)
+        self.assertIn("transform: translate(-50%, -50%);", out)
+        self.assertIn("transition: all .3s;", out)   # transition left untouched (only transform)
+
     def test_idempotent(self):
         once, _ = center_help_menu(self.RULE)
         twice, changed = center_help_menu(once)

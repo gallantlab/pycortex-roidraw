@@ -10,7 +10,9 @@ pycortex static viewer.
      case ('r' for plain, 'R'/'S'/'L' for shifted), so we render the key verbatim and capitalize
      the modifier label ("shift" -> "Shift").
   2. Help-menu POSITION — pycortex pins #helpmenu to the left edge (left:0%), where its lower half
-     hides behind the lower-left legend. We center it horizontally.
+     hides behind the lower-left legend (and some viewers instead place it top-left, also colliding
+     with the legend). We center it (top/left:50%, transform:translate(-50%,-50%)) regardless of
+     where it shipped.
   3. Help-menu FONT — #helpmenu sets no font-family, so the panel falls back to the browser-default
      serif (Times in Firefox) while the rest of the viewer UI is sans-serif. We give it an explicit
      sans-serif so it matches.
@@ -43,11 +45,15 @@ def fix_help_key_case(html):
 
 
 def center_help_menu(html):
-    """Center #helpmenu horizontally (it ships pinned left). Idempotent; scoped to its CSS rule."""
+    """Center #helpmenu (top/left:50%, transform:translate(-50%, -50%)) regardless of where it
+    shipped — stock is left:0% (lower half hidden behind the legend); some viewers place it top-left
+    instead. Idempotent; scoped to the #helpmenu rule. Rewrites the top/left/transform declarations
+    only (the `transition`/`-*-transition` properties and longhand `*-left` are left untouched)."""
     def repl(m):
-        body = (m.group(2)
-                .replace("left: 0%;", "left: 50%;")
-                .replace("translate(0%, -50%)", "translate(-50%, -50%)"))
+        body = m.group(2)
+        body = re.sub(r"(?<![-\w])top\s*:\s*[^;]+;", "top: 50%;", body, count=1)
+        body = re.sub(r"(?<![-\w])left\s*:\s*[^;]+;", "left: 50%;", body, count=1)
+        body = re.sub(r"(?<![-\w])transform\s*:\s*[^;]+;", "transform: translate(-50%, -50%);", body, count=1)
         return m.group(1) + body + m.group(3)
     out = re.sub(r"(#helpmenu\s*\{)([^}]*)(\})", repl, html, count=1)
     return out, out != html

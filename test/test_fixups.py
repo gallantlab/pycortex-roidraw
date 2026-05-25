@@ -1,10 +1,10 @@
-"""Unit tests for fixups (help-menu case + centering + font). Run: python3 test/test_fixups.py -v"""
+"""Unit tests for fixups (help-menu case + centering + font + hint). Run: python3 test/test_fixups.py -v"""
 import os
 import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from fixups import fix_help_key_case, center_help_menu, set_help_menu_font  # noqa: E402
+from fixups import fix_help_key_case, center_help_menu, set_help_menu_font, add_help_hint  # noqa: E402
 
 
 class HelpKeyCaseTests(unittest.TestCase):
@@ -65,6 +65,36 @@ class HelpFontTests(unittest.TestCase):
     def test_idempotent(self):
         once, _ = set_help_menu_font(self.RULE)
         twice, changed = set_help_menu_font(once)
+        self.assertFalse(changed)
+        self.assertEqual(once, twice)
+
+
+class HelpHintTests(unittest.TestCase):
+    TEMPLATE = ('<script type="text/html" id=mriview_html><div id="main">'
+                '<div id="braincontainer"></div></div></script>'
+                '<script>var helpmenu = function(){};</script>')
+    NO_HELP = "<div>a viewer with no help menu</div>"
+
+    def test_inserts_into_main_template(self):
+        out, changed = add_help_hint(self.TEMPLATE)
+        self.assertTrue(changed)
+        self.assertIn("press <b>h</b> for help", out)
+        # placed right after the template's #main open -> built as part of the viewer's own DOM
+        self.assertTrue(out.find('<div id="main">') < out.find("pycortex-helphint") < out.find('id="braincontainer"'))
+
+    def test_skips_when_no_help(self):
+        out, changed = add_help_hint(self.NO_HELP)
+        self.assertFalse(changed)                 # never advertise help a viewer doesn't have
+        self.assertEqual(self.NO_HELP, out)
+
+    def test_appends_when_no_main_template(self):
+        out, changed = add_help_hint("<script>var helpmenu = function(){};</script>")
+        self.assertTrue(changed)                  # help present but no #main template -> fallback append
+        self.assertIn("pycortex-helphint", out)
+
+    def test_idempotent(self):
+        once, _ = add_help_hint(self.TEMPLATE)
+        twice, changed = add_help_hint(once)
         self.assertFalse(changed)
         self.assertEqual(once, twice)
 

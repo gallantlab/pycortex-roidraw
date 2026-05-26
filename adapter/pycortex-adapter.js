@@ -162,6 +162,63 @@ export class PycortexAdapter extends ViewerAdapter {
         return out;
     }
 
+    // All vertices' subject index + flat-UV, per hemi. View-INDEPENDENT (no camera), so it's the
+    // basis for uv-space ROI membership: a reloaded bezier selects the same vertices regardless of
+    // the current pan/zoom/mix. uv is the same shared [0,1]^2 the SVG overlay uses.
+    allVertexUV() {
+        const out = { left: { idx: [], uv: [] }, right: { idx: [], uv: [] } };
+        for (const h of HEMIS) {
+            const hemi = this.surface.hemis[h];
+            const uvarr = hemi.attributes.uv && hemi.attributes.uv.array;
+            if (!uvarr) continue;
+            const revIdx = hemi.reverseIndexMap;
+            const n = attrCount(this.posdata[h].positions[0]);
+            for (let i = 0; i < n; i++) {
+                out[h].idx.push(revIdx[i]);
+                out[h].uv.push([uvarr[i * 2], uvarr[i * 2 + 1]]);
+            }
+        }
+        return out;
+    }
+
+    // Flat-UV of one subject vertex {h,g}, or null if it has no flat coords.
+    vertexUV(o) {
+        const hemi = this.surface.hemis[o.h];
+        if (!hemi || !hemi.attributes.uv) return null;
+        const gi = hemi.indexMap[o.g]; // subject -> geometry-local
+        if (gi === undefined) return null;
+        const uv = hemi.attributes.uv.array;
+        return [uv[gi * 2], uv[gi * 2 + 1]];
+    }
+
+    // Project ONLY the vertices whose flat-UV is within `b` ({minu,maxu,minv,maxv}). Cheap (scans
+    // uv with no projection, projects just the in-bounds few) and dense. The edit overlay fits its
+    // uv->px homography from these LOCAL correspondences: the flatmap isn't perfectly planar, so a
+    // single global homography drifts, but locally (around one ROI) it's near-exact — which is what
+    // makes the editable curve trace the baked white outline instead of sitting slightly inside it.
+    projectVerticesInUvBounds(b) {
+        const { cam, surfmix, foy, W, H } = this._prepProjection();
+        const out = { left: { uv: [], px: [] }, right: { uv: [], px: [] } };
+        for (const h of HEMIS) {
+            const pivot = this.surface.pivots[h].back;
+            pivot.updateMatrixWorld(true);
+            const mw = pivot.matrixWorld;
+            const pd = this.posdata[h];
+            const uvarr = this.surface.hemis[h].attributes.uv && this.surface.hemis[h].attributes.uv.array;
+            if (!uvarr) continue;
+            const n = attrCount(pd.positions[0]);
+            for (let i = 0; i < n; i++) {
+                const u = uvarr[i * 2], v = uvarr[i * 2 + 1];
+                if (u < b.minu || u > b.maxu || v < b.minv || v > b.maxv) continue;
+                const p = this._worldOf(pd, mw, i, surfmix, foy).project(cam);
+                if (p.z < -1 || p.z > 1) continue;
+                out[h].uv.push([u, v]);
+                out[h].px.push(this._ndc(p, W, H));
+            }
+        }
+        return out;
+    }
+
     _ndc(v, W, H) { return [(v.x * 0.5 + 0.5) * W, (-v.y * 0.5 + 0.5) * H]; }
 
     // --- view framing primitive -------------------------------------------------------
@@ -375,21 +432,35 @@ export class PycortexAdapter extends ViewerAdapter {
         return true;
     }
 
-    // An ROI's white outline as an SVG path in overlay (flat-uv) coords: vertex uv -> (u*W,(1-v)*H).
+    // An ROI's white outline as an SVG path in overlay (flat-uv) coords: uv -> (u*W,(1-v)*H).
+    // When the ROI carries a bezier (the editable boundary), emit it as a native cubic path —
+    // genuinely smooth and compact. Otherwise fall back to a Chaikin-smoothed vertex ring (v1 ROIs).
     _roiSvgPath(roi, W, H) {
+        if (roi.bezier && roi.bezier.anchors && roi.bezier.anchors.length >= 3)
+            return this._bezierSvgPath(roi.bezier, W, H);
         if (!roi.outline || roi.outline.length < 3) return null;
         const pts = [];
         for (const o of roi.outline) {
-            const hemi = this.surface.hemis[o.h];
-            const gi = hemi.indexMap[o.g]; // subject -> geometry-local
-            if (gi === undefined || !hemi.attributes.uv) continue;
-            const uv = hemi.attributes.uv.array;
-            pts.push([uv[gi * 2] * W, (1 - uv[gi * 2 + 1]) * H]);
+            const uv = this.vertexUV(o);
+            if (uv) pts.push([uv[0] * W, (1 - uv[1]) * H]);
         }
         if (pts.length < 3) return null;
         const c = chaikin(pts, 2);
         let d = "M" + c[0][0].toFixed(2) + "," + c[0][1].toFixed(2);
         for (let i = 1; i < c.length; i++) d += "L" + c[i][0].toFixed(2) + "," + c[i][1].toFixed(2);
+        return d + "Z";
+    }
+
+    // Closed cubic-bezier path from {anchors,inHandles,outHandles} in flat-uv -> viewBox px.
+    _bezierSvgPath(bez, W, H) {
+        const { anchors, inHandles, outHandles } = bez;
+        const n = anchors.length;
+        const P = (uv) => (uv[0] * W).toFixed(2) + "," + ((1 - uv[1]) * H).toFixed(2);
+        let d = "M" + P(anchors[0]);
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            d += "C" + P(outHandles[i]) + " " + P(inHandles[j]) + " " + P(anchors[j]);
+        }
         return d + "Z";
     }
 

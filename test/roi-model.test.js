@@ -46,6 +46,35 @@ test("loadJSON: back-fills labelVert from the outline when missing", () => {
     assert.deepStrictEqual(roi.labelVert, { h: "left", g: 2 });
 });
 
+test("toJSON/loadJSON round-trips the editable bezier", () => {
+    const bezier = {
+        closed: true,
+        anchors: [[0.4, 0.5], [0.5, 0.42], [0.6, 0.5]],
+        inHandles: [[0.38, 0.5], [0.48, 0.42], [0.58, 0.5]],
+        outHandles: [[0.42, 0.5], [0.52, 0.42], [0.62, 0.5]],
+    };
+    const s = new ROISet();
+    s.add({ name: "FFA", left: [10], right: [], bezier });
+    const doc = s.toJSON("fsaverage");
+    assert.strictEqual(doc.format, "pycortex-roidraw/vertexset-v2");
+    assert.deepStrictEqual(doc.rois[0].bezier, bezier);
+
+    const s2 = new ROISet();
+    s2.loadJSON(JSON.parse(JSON.stringify(doc)));
+    assert.deepStrictEqual(s2.rois[0].bezier, bezier);
+});
+
+test("loadJSON: a v1 file (no bezier) still loads, with bezier=null", () => {
+    const s = new ROISet();
+    const [roi] = s.loadJSON({
+        format: "pycortex-roidraw/vertexset-v1",
+        rois: [{ name: "V1", vertices: { left: [1, 2, 3], right: [] },
+                 outline: [{ h: "left", g: 1 }, { h: "left", g: 2 }, { h: "left", g: 3 }] }],
+    });
+    assert.strictEqual(roi.bezier, null);
+    assert.deepStrictEqual(roi.left, [1, 2, 3]);
+});
+
 test("loadJSON: rejects an unknown format", () => {
     assert.throws(() => new ROISet().loadJSON({ format: "something-else" }), /unrecognized format/);
 });

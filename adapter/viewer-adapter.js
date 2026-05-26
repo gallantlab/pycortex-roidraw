@@ -40,14 +40,34 @@ export class ViewerAdapter {
      */
     projectVertices(_opts) { throw new Error("ViewerAdapter.projectVertices not implemented"); }
 
+    /**
+     * Every vertex's subject index + flat-UV, per hemi. View-INDEPENDENT (no camera): the basis
+     * for uv-space ROI membership, so a reloaded bezier selects the same vertices at any view.
+     * @returns {{left:{idx:number[], uv:[number,number][]}, right:{...}}}
+     */
+    allVertexUV() { throw new Error("ViewerAdapter.allVertexUV not implemented"); }
+
+    /** @returns {[number,number]|null} flat-UV ([0,1]) of one subject vertex {h,g}, or null. */
+    vertexUV(_o) { throw new Error("ViewerAdapter.vertexUV not implemented"); }
+
+    /**
+     * Project ONLY the vertices whose flat-UV falls within `bounds`, reporting each one's uv AND
+     * current-view px. The bezier edit overlay fits a LOCAL uv<->px homography from these (one
+     * global homography drifts where the flatmap isn't perfectly planar; locally it's near-exact).
+     * @param {{minu:number,maxu:number,minv:number,maxv:number}} bounds
+     * @returns {{left:{uv:[number,number][], px:[number,number][]}, right:{...}}}
+     */
+    projectVerticesInUvBounds(_bounds) { throw new Error("ViewerAdapter.projectVerticesInUvBounds not implemented"); }
+
     /* --- overlay layer (the occlusion-correct ROI rendering) -------------------------- */
 
     /**
      * Create/replace a named overlay layer rendered INTO the surface (so it occludes and morphs
-     * like built-in ROIs). `rois` carries, per ROI, the boundary ring + label vertex; the adapter
-     * converts vertices→uv→layer geometry.
+     * like built-in ROIs). `rois` carries, per ROI, the boundary ring + label vertex (and, when
+     * present, an editable flat-UV `bezier` the adapter renders as a smooth cubic path); the
+     * adapter converts vertices/bezier→uv→layer geometry.
      * @param {string} name
-     * @param {Array<{name, outline:[{h,g}], labelVert:{h,g}}>} rois
+     * @param {Array<{name, outline:[{h,g}], labelVert:{h,g}, bezier?}>} rois
      */
     setOverlayLayer(_name, _rois) { throw new Error("ViewerAdapter.setOverlayLayer not implemented"); }
 

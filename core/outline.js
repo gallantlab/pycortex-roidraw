@@ -7,7 +7,9 @@
  */
 import { simplifyRDP } from "./geom.js";
 
-const DEFAULT_EPSILON = 4; // px; RDP tolerance — removes hand tremor, keeps concave corners
+// RDP tolerance — removes hand tremor, keeps concave corners. In the SAME units as `lasso`/`sel.px`:
+// the default suits a screen-pixel lasso; a uv-space caller ([0,1]) MUST pass a uv-scale epsilon.
+const DEFAULT_EPSILON = 4;
 
 /*
  * lasso : [[x,y], ...]

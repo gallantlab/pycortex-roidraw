@@ -10,6 +10,7 @@
 }
 .roidraw-overlay--active { cursor: crosshair; background: rgba(255, 204, 0, 0.05); outline: 2px dashed rgba(255, 204, 0, 0.8); }
 .roidraw-overlay--inspect { cursor: cell;  background: rgba(80, 160, 255, 0.06); outline: 2px dashed rgba(80, 160, 255, 0.85); }
+.roidraw-edit-overlay--active { outline: 2px dashed rgba(57, 208, 255, 0.85); }
 
 .roidraw-panel {
     position: fixed;
@@ -41,7 +42,32 @@
 .roidraw-roi__swatch { width: 10px; height: 10px; display: inline-block; border-radius: 2px; }
 .roidraw-roi__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .roidraw-roi__count { color: #999; }
+.roidraw-roi__editbtn {
+    width: auto;                   /* override .roidraw-panel button { width: 100% } */
+    margin: 0;
+    padding: 3px 9px;
+    font-size: 11px;
+    color: #cdeffb;
+    background: #18586e;
+    border: 1px solid #2c7d99;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.roidraw-roi__editbtn:hover:not(:disabled) { background: #1e6f8a; }
+.roidraw-roi__editbtn--on { background: #1e9fd0; border-color: #4cc6f0; color: #04222e; font-weight: 700; }
+.roidraw-roi__editbtn:disabled { opacity: 0.4; cursor: default; }
 .roidraw-roi__del { color: #f77; text-decoration: none; cursor: pointer; }
+.roidraw-roi--editing { outline: 1px solid rgba(57, 208, 255, 0.6); border-radius: 3px; }
+
+.roidraw-done {
+    background: #1e9fd0;
+    color: #04222e;
+    font-weight: 700;
+    border: 0;
+    padding: 9px;
+    border-radius: 5px;
+}
+.roidraw-done:hover { background: #36b6e6; }
 
 .roidraw-msg { color: #9cf; font-size: 11px; max-height: 110px; overflow: auto; word-break: break-word; }
 

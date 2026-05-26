@@ -57,15 +57,25 @@ A **Display / Draw** toggle sits at the top of the viewer.
 The panel lists drawn ROIs and has **Export JSON** / **Import** / **Clear all**. Drawn ROIs are a
 toggleable overlay layer (Surface → overlays → "drawn ROIs") alongside the built-in rois/sulci.
 
-### Editing a shape
+### Editing a shape — full bezier controls
 
-Click **✎ edit** next to an ROI in the panel. Its bezier knots appear on the flatmap as draggable
-dots; drag a knot to reshape the curve (the tangent handles stay smooth automatically — v1 is
-"drag knots only"). You can scroll to zoom and Shift-drag to pan while editing, and the knots track
-the surface as you do. The vertex membership is **re-derived from the bezier** on release, so the
-exported vertex set always matches the curve you see. Click the **✓ Done editing** button (or
-`Esc`) to finish. Imported ROIs are editable too — older files without a bezier get one fitted from
-their boundary ring on import.
+Click **✎ edit** next to an ROI in the panel. The shape's anchors appear on the flatmap, and you get
+the full set of vector-editing controls:
+
+| Gesture | Action |
+| --- | --- |
+| Drag an anchor (**●**/**■**) | Move it; its two tangent handles travel with it |
+| Click an anchor | Select it → its two tangent handles (**○**) appear |
+| Drag a handle (**○**) | Bend the curve. A **smooth** anchor mirrors the opposite handle; a **corner** anchor moves each side independently |
+| Double-click the curve | Insert a new anchor there (the curve shape is preserved) |
+| Double-click an anchor | Toggle it between **smooth** (●, circle) and **corner** (■, square) |
+| `Delete` / `Backspace` | Remove the selected anchor (a minimum of 3 is kept) |
+| Scroll wheel | Zoom · **Shift** + drag | Pan |
+
+The anchors track the surface as you zoom/pan. Vertex membership is **re-derived from the bezier** on
+every change, so the exported vertex set always matches the curve you see. Click **✓ Done editing**
+(or `Esc`) to finish. Imported ROIs are editable too — older files without a bezier get one fitted
+from their boundary ring on import, and a freshly fit curve starts fully smooth.
 
 ### Export format
 
@@ -85,12 +95,15 @@ and the editable **bezier** (control points in view-independent flat-UV `[0,1]`)
       "bezier": { "closed": true,
                   "anchors":    [ [0.41, 0.55], ... ],
                   "inHandles":  [ [0.40, 0.55], ... ],
-                  "outHandles": [ [0.42, 0.55], ... ] } }
+                  "outHandles": [ [0.42, 0.55], ... ],
+                  "smooth":     [ true, false, ... ] } }
   ]
 }
 ```
 
-`v1` files (no `bezier`) still import; the bezier is back-filled from the outline ring.
+The `bezier` carries explicit tangent handles and a per-anchor `smooth` flag, so a re-imported curve
+re-edits identically. `v1` files (no `bezier`) still import — the bezier is back-filled from the
+outline ring; a `bezier` from an earlier build (no `smooth`) is treated as all-smooth.
 
 ---
 

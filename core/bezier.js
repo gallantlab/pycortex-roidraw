@@ -7,8 +7,10 @@
  * is what lets a reloaded ROI be re-rendered AND re-edited identically to a freshly drawn one.
  *
  * Smoothing model: anchors are the simplified ring vertices; each anchor's tangent handles are
- * the uniform Catmull-Rom tangent (next - prev)/6, mirrored in/out. Dragging an anchor and
- * recomputing keeps the curve smooth without the user touching handles ("drag knots only").
+ * the uniform Catmull-Rom tangent (next - prev)/6, mirrored in/out. A freshly fit curve is fully
+ * smooth, but the handles are EXPLICIT and editable (see the edit overlay): they are the source of
+ * truth, not re-derived from the anchors. A parallel `smooth[]` flag marks each anchor smooth
+ * (handles kept symmetric about the anchor) or a corner/cusp (handles move independently).
  */
 import { simplifyRDP, centroid } from "./geom.js";
 
@@ -28,11 +30,11 @@ export function catmullRomHandles(anchors) {
     return { inHandles, outHandles };
 }
 
-/* Build a bezier descriptor from anchors alone (handles auto-derived). */
+/* Build a bezier descriptor from anchors alone (handles auto-derived, every anchor smooth). */
 export function bezierFromAnchors(anchors) {
     const a = anchors.map((p) => [p[0], p[1]]);
     const { inHandles, outHandles } = catmullRomHandles(a);
-    return { closed: true, anchors: a, inHandles, outHandles };
+    return { closed: true, anchors: a, inHandles, outHandles, smooth: a.map(() => true) };
 }
 
 /*
@@ -100,4 +102,125 @@ export function evalClosedBezier(bez, samplesPerSeg = 12) {
         for (let s = 0; s < steps; s++) out.push(cubicAt(p0, c1, c2, p3, s / steps));
     }
     return out;
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * Editing operations. All take a bezier descriptor and return a NEW one (no mutation), so the
+ * edit overlay can keep a clean working copy and the host can swap it in on commit. They preserve
+ * the {closed, anchors, inHandles, outHandles, smooth} shape; `smooth[i]` defaults to true.
+ * ------------------------------------------------------------------------------------------- */
+
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1]];
+const add = (a, b) => [a[0] + b[0], a[1] + b[1]];
+const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+const len = (v) => Math.hypot(v[0], v[1]);
+
+/* Deep copy, back-filling a missing `smooth` array (older files) as all-smooth. */
+export function cloneBezier(bez) {
+    const n = bez.anchors.length;
+    return {
+        closed: bez.closed !== false,
+        anchors: bez.anchors.map((p) => [p[0], p[1]]),
+        inHandles: bez.inHandles.map((p) => [p[0], p[1]]),
+        outHandles: bez.outHandles.map((p) => [p[0], p[1]]),
+        smooth: bez.smooth ? bez.smooth.slice(0, n) : bez.anchors.map(() => true),
+    };
+}
+
+/* Move anchor i to `pos`, carrying its two handles by the same delta (the local shape is rigid —
+ * standard vector-editor behavior, so a smooth anchor stays smooth when you slide it). */
+export function moveAnchor(bez, i, pos) {
+    const b = cloneBezier(bez);
+    const d = sub(pos, b.anchors[i]);
+    b.anchors[i] = [pos[0], pos[1]];
+    b.outHandles[i] = add(b.outHandles[i], d);
+    b.inHandles[i] = add(b.inHandles[i], d);
+    return b;
+}
+
+/* Move one tangent handle of anchor i. which = "out" | "in". If the anchor is smooth, the opposite
+ * handle is mirrored about the anchor (kept collinear + equal length) so the curve stays smooth;
+ * a corner anchor moves the handle independently. */
+export function moveHandle(bez, i, which, pos) {
+    const b = cloneBezier(bez);
+    const a = b.anchors[i];
+    const here = which === "in" ? b.inHandles : b.outHandles;
+    const other = which === "in" ? b.outHandles : b.inHandles;
+    here[i] = [pos[0], pos[1]];
+    if (b.smooth[i]) other[i] = [2 * a[0] - pos[0], 2 * a[1] - pos[1]];   // mirror
+    return b;
+}
+
+/* Set anchor i smooth or corner. Turning it smooth re-derives both handles symmetric about the
+ * anchor: aligned to the local tangent (neighbor direction), with the current average handle length
+ * preserved so the curve keeps its tightness. Turning it to a corner leaves the handles as-is
+ * (they simply become independently draggable). */
+export function setAnchorSmooth(bez, i, smooth) {
+    const b = cloneBezier(bez);
+    b.smooth[i] = !!smooth;
+    if (!smooth) return b;
+    const n = b.anchors.length;
+    const a = b.anchors[i], prev = b.anchors[(i - 1 + n) % n], next = b.anchors[(i + 1) % n];
+    let dir = sub(next, prev);
+    let dl = len(dir);
+    if (dl < 1e-9) { dir = sub(b.outHandles[i], a); dl = len(dir); }   // fall back to current out dir
+    if (dl < 1e-9) { dir = [1, 0]; dl = 1; }
+    dir = [dir[0] / dl, dir[1] / dl];
+    let r = (len(sub(b.outHandles[i], a)) + len(sub(b.inHandles[i], a))) / 2;
+    if (r < 1e-9) r = dl / 6;                                          // both handles collapsed
+    b.outHandles[i] = [a[0] + dir[0] * r, a[1] + dir[1] * r];
+    b.inHandles[i] = [a[0] - dir[0] * r, a[1] - dir[1] * r];
+    return b;
+}
+
+/* Insert an anchor on segment `seg` (anchor seg -> anchor seg+1) at parameter t in (0,1), splitting
+ * the cubic with de Casteljau so the curve shape is UNCHANGED. The new anchor is smooth (the split
+ * point is naturally C1). Returns a new bezier with one more anchor. */
+export function splitSegment(bez, seg, t) {
+    const b = cloneBezier(bez);
+    const n = b.anchors.length;
+    const j = (seg + 1) % n;
+    const p0 = b.anchors[seg], p1 = b.outHandles[seg], p2 = b.inHandles[j], p3 = b.anchors[j];
+    const ab = lerp(p0, p1, t), bc = lerp(p1, p2, t), cd = lerp(p2, p3, t);
+    const abc = lerp(ab, bc, t), bcd = lerp(bc, cd, t);
+    const mid = lerp(abc, bcd, t);                       // the new on-curve anchor
+    b.outHandles[seg] = ab;                              // left sub-cubic: p0, ab, abc, mid
+    b.inHandles[j] = cd;                                 // right sub-cubic: mid, bcd, cd, p3
+    b.anchors.splice(seg + 1, 0, mid);
+    b.inHandles.splice(seg + 1, 0, abc);
+    b.outHandles.splice(seg + 1, 0, bcd);
+    b.smooth.splice(seg + 1, 0, true);
+    return b;
+}
+
+/* Remove anchor i. Refuses (returns the input unchanged) below 3 anchors — a closed bezier needs 3.
+ * Neighboring handles are left as they were, so the curve reconnects prev -> next through them. */
+export function deleteAnchor(bez, i) {
+    if (bez.anchors.length <= 3) return bez;
+    const b = cloneBezier(bez);
+    b.anchors.splice(i, 1);
+    b.inHandles.splice(i, 1);
+    b.outHandles.splice(i, 1);
+    b.smooth.splice(i, 1);
+    return b;
+}
+
+/* Nearest point on the closed bezier to `pt`, by sampling each segment. Returns
+ * { seg, t, point:[x,y], dist } (dist is Euclidean in the same space as pt), or null. Used to add a
+ * point where the curve was clicked. */
+export function nearestOnClosedBezier(bez, pt, samplesPerSeg = 24) {
+    if (!bez || !bez.anchors || bez.anchors.length < 3) return null;
+    const { anchors, inHandles, outHandles } = bez;
+    const n = anchors.length, steps = Math.max(2, samplesPerSeg | 0);
+    let best = null;
+    for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const p0 = anchors[i], c1 = outHandles[i], c2 = inHandles[j], p3 = anchors[j];
+        for (let s = 0; s <= steps; s++) {
+            const t = s / steps, q = cubicAt(p0, c1, c2, p3, t);
+            const dx = q[0] - pt[0], dy = q[1] - pt[1], d = dx * dx + dy * dy;
+            if (!best || d < best.d2) best = { seg: i, t, point: q, d2: d };
+        }
+    }
+    return best ? { seg: best.seg, t: best.t, point: best.point, dist: Math.sqrt(best.d2) } : null;
 }

@@ -6,7 +6,10 @@
  * The serialized form references SUBJECT vertex indices, so it ports to any viewer built on the
  * same surface. `outline`/`labelVert` reconstruct the boundary + label; `bezier` is the editable
  * smooth boundary in flat-UV space (see core/bezier.js) — vertices are DERIVED from it, so the
- * bezier is the source of truth when an ROI is reloaded and re-edited.
+ * bezier is the source of truth when an ROI is reloaded and re-edited. The bezier descriptor
+ * ({anchors, inHandles, outHandles, smooth}) is written/read verbatim, so its explicit tangent
+ * handles and per-anchor smooth flags round-trip for free; a `bezier` from an earlier build simply
+ * lacks `smooth` and is treated as all-smooth on edit (the format stays vertexset-v2 — additive).
  *
  * `bezier` is null for ROIs (or v1 files) drawn before this feature; the importer back-fills one.
  */

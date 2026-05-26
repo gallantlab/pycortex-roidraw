@@ -119,7 +119,7 @@ class ROIDrawer {
     _renderStatus() {
         if (this.mode !== "draw") return;   // the panel is hidden in Display mode
         if (!this.adapter.isFlat()) { this.panel.setStatus("Flattening…", "warn"); return; }
-        if (this.editOverlay.isEditing()) this.panel.setStatus("Editing shape · drag the knots · scroll to zoom · click “done” when finished.", "draw");
+        if (this.editOverlay.isEditing()) this.panel.setStatus("Editing — drag ● to move · click an anchor, drag ○ to bend · double-click the line to add a point · double-click ● to toggle corner/smooth · select + Delete to remove · scroll to zoom · ✓ done when finished.", "draw");
         else this.panel.setStatus("Lasso to draw · ✎ to edit a shape · scroll to zoom · Shift+drag to pan · Shift+click to inspect.", "draw");
     }
 

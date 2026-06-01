@@ -8,7 +8,7 @@
     "build": "node build.mjs",
     "test": "npm run test:js && npm run test:py",
     "test:js": "node --test test/*.test.js",
-    "test:py": "python3 test/test_bake.py && python3 test/test_fixups.py && python3 test/test_add_help.py"
+    "test:py": "python3 test/test_bake.py && python3 test/test_fixups.py && python3 test/test_add_help.py && python3 test/test_reengine.py && python3 test/test_convert_huth.py"
   },
   "devDependencies": {
     "esbuild": "^0.24.0"

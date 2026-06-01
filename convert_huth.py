@@ -209,6 +209,26 @@ def replace_title(shell_html, title):
     return re.sub(r"<title>.*?</title>", "<title>%s</title>" % title, shell_html, count=1, flags=re.S)
 
 
+# Current pycortex `main` comments out the surface-centering translation in mriview's Surface
+# constructor: `//this.object.position.set(0, -center[1], -center[2]);`. The old engine ran it,
+# shifting the cortex container by -[center_y, center_z] (the AP/SI centroid; X is left untouched —
+# that's the interhemispheric axis handled by the shift). Huth's viewer hard-codes an external
+# scalp/head mesh (MLneck_fix_scalp_freesurfer.json) authored to align with the CENTERED cortex, so
+# on main the cortex renders ~23 mm off (brain sits low in the head). We re-enable the line for this
+# build. Scoped to the huth conversion on purpose: re-centering globally would misplace a viewer that
+# instead hard-codes external geometry in the RAW (uncentered) frame.
+_CENTERING_COMMENTED = re.compile(
+    r"//\s*this\.object\.position\.set\(0,\s*-center\[1\],\s*-center\[2\]\);")
+_CENTERING_ACTIVE = "this.object.position.set(0, -center[1], -center[2]);"
+
+
+def restore_surface_centering(shell_html):
+    """Un-comment mriview's cortex-centering line so the brain aligns with huth's hard-coded scalp.
+    Idempotent: no-op if the line is already active (older engines) or absent."""
+    new = _CENTERING_COMMENTED.sub(_CENTERING_ACTIVE, shell_html)
+    return new, new != shell_html
+
+
 # --------------------------------------------------------------------------- #
 # Orchestration                                                                 #
 # --------------------------------------------------------------------------- #
@@ -243,6 +263,7 @@ def convert(old_viewer, stories_viewer, out_path, pycortex_root=None,
         with open(shell_tmp, encoding="utf-8") as fp:
             shell = fp.read()
         os.remove(shell_tmp)
+        shell, _ = restore_surface_centering(shell)  # main dropped cortex centering; huth's scalp needs it
         ref_viewopts = reengine._viewopts_from_config(pycortex_root)
         apply_help_fixups = True
     else:                                           # stories-group's framework

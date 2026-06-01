@@ -133,5 +133,32 @@ class ModernizeTourTests(unittest.TestCase):
         self.assertNotIn("div.tour-close", out)
 
 
+class RestoreSurfaceCenteringTests(unittest.TestCase):
+    def test_uncomments_main_line(self):
+        js = "this.center = center;\n//this.object.position.set(0, -center[1], -center[2]);\nvar n=1;"
+        out, changed = ch.restore_surface_centering(js)
+        self.assertTrue(changed)
+        self.assertIn("\nthis.object.position.set(0, -center[1], -center[2]);\n", out)
+        self.assertNotIn("//this.object.position.set", out)
+
+    def test_tolerates_whitespace_after_slashes(self):
+        js = "//  this.object.position.set(0,  -center[1],  -center[2]);"
+        out, changed = ch.restore_surface_centering(js)
+        self.assertTrue(changed)
+        self.assertFalse(out.lstrip().startswith("//"))
+
+    def test_idempotent_when_already_active(self):
+        js = "this.object.position.set(0, -center[1], -center[2]);"
+        out, changed = ch.restore_surface_centering(js)
+        self.assertFalse(changed)
+        self.assertEqual(out, js)
+
+    def test_noop_when_absent(self):
+        js = "var unrelated = 1;"
+        out, changed = ch.restore_surface_centering(js)
+        self.assertFalse(changed)
+        self.assertEqual(out, js)
+
+
 if __name__ == "__main__":
     unittest.main()

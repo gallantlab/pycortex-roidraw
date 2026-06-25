@@ -22,8 +22,9 @@ Refreshed it for real:
 - Repo is **already PUBLIC** (`isPrivate:false`) — no visibility change needed.
 - Note: this viewer is a self-contained static file → **pinned to v0.3.1** (does NOT track
   `/releases/latest` like the pycortex docs do). Future roidraw releases need a re-bake here.
-- Open nit (not changed — outward-facing): repo description still says "Private demo …",
-  contradictory now that it's public. Offered to update; awaiting user call.
+- Repo **description updated** (was "Private demo …", contradictory once public) →
+  "Public demo: gallantlab group stories viewer + in-browser ROI drawing
+  (pycortex-roidraw v0.3.1)".
 
 ## 2026-06-25 — Public release, core-docs PR, overlay-race fix, Draw-mode UX (v0.3.1)
 

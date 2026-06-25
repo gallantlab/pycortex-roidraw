@@ -44,7 +44,7 @@ pycortex; fix a WebGL overlay/label texture-bake race; refine Draw-mode UX. All 
 - Shipped as **PR #652** against `gallantlab/pycortex`, **merged** (squash) to `main`
   at `2cc73098`; `build-docs` check passed; PR branch auto-deleted.
 
-### WebGL overlay/label texture-bake race fix (pycortex-src) — NOT YET PUSHED
+### WebGL overlay/label texture-bake race fix (pycortex-src) — MERGED (PR #653)
 Investigated the long-suspected overlay-toggle bug. History: fixes #643 (race guard) +
 #644 (redraw-on-bake) were merged then **both reverted** (#645/#646) because #644 caused
 **black-square labels** on load. Root cause confirmed in live code — THREE intertwined
@@ -62,7 +62,9 @@ surface's own update, NOT the overlay-texture path, so it doesn't clobber
 `uniforms.overlay.value`; no `mriview_surface.js` change needed). `node --check` passes.
 **Browser-verified** by the user against a patched copy of the real
 `viewer-stories-group-roidraw` (drawing viewer baked w/ roidraw bundle) — looked good.
-**STILL TODO: push the branch + open a PR to gallantlab/pycortex** (user hasn't decided yet).
+**Shipped as PR #653, merged (squash) to `main` at `8f021cab`; branch auto-deleted.**
+Note: repo has NO required status checks, so `gh pr merge --auto` merges immediately
+(this is why #652/#653 landed on the spot, not after CI).
 
 ### Branch tidy (pycortex-src)
 - Deleted merged `claude/document-roidraw`, and the now-redundant `claude/revert-overlay-guard`
@@ -72,8 +74,10 @@ surface's own update, NOT the overlay-texture path, so it doesn't clobber
   `claude/overlay-bake-race-fix` (the complete fix).
 
 ### Open / next time
-- **Push `claude/overlay-bake-race-fix` + open the pycortex PR** when the user is ready.
+- Nothing outstanding — public release, docs PR (#652), and overlay fix (#653) all merged.
 - pycortex docs site will surface the new roidraw page on its next build/deploy.
+- Docs link to roidraw `/releases/latest`, so users always get newest; remember to cut a
+  new GitHub release (build + tag) whenever the roidraw JS changes, else the link lags.
 - If roidraw JS changes: rebuild + cut a new release so `/releases/latest` updates.
 - Browser-test scaffolding was in the session scratchpad (1.5 GB viewer clone +
   localhost:8911 server) — disposable, cleaned at session end.

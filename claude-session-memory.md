@@ -2,6 +2,29 @@
 
 _Current status file. Most recent session at top._
 
+## 2026-06-25 (later) — Refresh the dormant demo viewer to latest-and-greatest
+
+Follow-up: confirmed the dormant demo at **`gallantlab/viewer-stories-group-roidraw`**
+(the repo we'd browser-tested against) was **stale** — last pushed 2026-06-01, baked with
+**roidraw v0.3.0** (86,728 B, no `_sawFlatInDraw`/`_flattenForDraw`) and **no overlay race
+fix** (`_updateGen` guard absent). The earlier "fix" we tested was only a *scratchpad*
+working-tree patch, never committed to that repo.
+
+Refreshed it for real:
+- Dropped in the canonical **v0.3.1** `roidraw.bundle.js` (87,359 B, byte-identical to
+  `/releases/latest` asset; `node --check` clean).
+- Applied the overlay/label texture-bake race fix to its inline `viewer.html` JS (surgical
+  +34/−9: generation guard ×2 + `Labels` EventDispatcher/redraw wiring + surf
+  `update`→schedule). Same patch the user browser-verified.
+- Committed **`3659d6ad6f`** and **pushed to `main`**; verified live via GitHub raw
+  (`_updateGen`×2 in viewer.html, `_sawFlatInDraw`×4 in bundle).
+- Re-served locally (localhost:8911) for a final browser check — user confirmed "looks good".
+- Repo is **already PUBLIC** (`isPrivate:false`) — no visibility change needed.
+- Note: this viewer is a self-contained static file → **pinned to v0.3.1** (does NOT track
+  `/releases/latest` like the pycortex docs do). Future roidraw releases need a re-bake here.
+- Open nit (not changed — outward-facing): repo description still says "Private demo …",
+  contradictory now that it's public. Offered to update; awaiting user call.
+
 ## 2026-06-25 — Public release, core-docs PR, overlay-race fix, Draw-mode UX (v0.3.1)
 
 **Goal:** make `pycortex-roidraw` available to outside users; document it in core

@@ -14,7 +14,7 @@ freshly generated/dynamic one.
 
 ## Add it to a viewer
 
-1. Build the bundle (see [Building](#building)), or grab a prebuilt `dist/roidraw.bundle.js`.
+1. Download `roidraw.bundle.js` from the [latest release](https://github.com/gallantlab/pycortex-roidraw/releases/latest), or build it yourself (see [Building](#building)).
 2. Copy `roidraw.bundle.js` next to the viewer's HTML.
 3. Add two tags before the closing `</body>` (pycortex `make_static` fragments have no `</body>` —
    append at the end instead):

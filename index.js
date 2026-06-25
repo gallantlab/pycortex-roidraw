@@ -38,6 +38,10 @@ class ROIDrawer {
         this.adapter = new PycortexAdapter(viewer, opts); // throws if the surface isn't ready
         this.rois = new ROISet();
         this.mode = "display";
+        // Drawing is flat-only. Track whether the surface has actually reached flat since we last
+        // (re)flattened for Draw, so the transient non-flat mix events emitted *during* a flatten
+        // glide don't immediately bounce us back out of Draw. See _onMix / _flattenForDraw.
+        this._sawFlatInDraw = false;
 
         this.overlay = new LassoOverlay(this.adapter, {
             onLasso: (pts) => this._finishLasso(pts),
@@ -85,6 +89,14 @@ class ROIDrawer {
     }
 
     _onMix() {
+        // Drawing is flat-only: once we've reached flat in Draw, any move away from flat (the user
+        // inflating / dragging the unfold slider) drops us back to Display. The _sawFlatInDraw latch
+        // ignores the transient non-flat mix events emitted while Draw's own flatten glide is still
+        // in flight, so selecting Draw doesn't immediately bounce back out.
+        if (this.mode === "draw") {
+            if (this.adapter.isFlat()) this._sawFlatInDraw = true;
+            else if (this._sawFlatInDraw) { this.setMode("display"); return; }
+        }
         this._updateDrawActive();   // lasso turns on once the flatten finishes
         if (this.editOverlay.isEditing()) this.editOverlay.reproject();  // keep knots on the surface
         this._frame();
@@ -93,12 +105,20 @@ class ROIDrawer {
 
     // --- modes ------------------------------------------------------------------------
 
+    // Flatten for Draw/Edit. Resets the "reached flat" latch first so the transient non-flat mix
+    // events the flatten glide emits don't trip the inflate-exits-Draw guard in _onMix before we
+    // actually arrive at flat.
+    _flattenForDraw() {
+        this._sawFlatInDraw = false;
+        this.adapter.flatten();
+    }
+
     setMode(mode) {
         this.mode = mode;
         if (mode === "draw") {
             this.adapter.setControlPanelVisible(false);
             this.panel.setVisible(true);
-            this.adapter.flatten();          // lasso activates once flat (see _updateDrawActive)
+            this._flattenForDraw();          // lasso activates once flat (see _updateDrawActive)
         } else {
             this._editToggle(null);          // leaving Draw ends any in-progress edit
             this.panel.setVisible(false);
@@ -179,6 +199,9 @@ class ROIDrawer {
     // Toggle shape editing. id => start editing that ROI's bezier; null => stop.
     _editToggle(id) {
         const roi = id != null ? this.rois.rois.find((r) => r.id === id) : null;
+        // Editing happens on the flatmap (the bezier knots live in the flat view). Starting an edit
+        // re-flattens if the surface has been inflated, so the shape's anchors land on the surface.
+        if (roi && !this.adapter.isFlat()) this._flattenForDraw();
         this.editingId = roi ? roi.id : null;
         this.editOverlay.setEditing(roi || null);
         this.panel.setEditingId(this.editingId);

@@ -44,7 +44,8 @@ python bake.py path/to/viewer_dir            # adds the bundle + the two <script
 A **Display / Draw** toggle sits at the top of the viewer.
 
 - **Display** — the normal pycortex viewer + control panel.
-- **Draw** — the brain flattens and the ROI panel appears. Then:
+- **Draw** — the brain flattens and the ROI panel appears. Drawing is **flat-only**: inflating the
+  surface (the unfold slider) returns you to Display. Then:
 
 | Gesture | Action |
 | --- | --- |
@@ -59,8 +60,8 @@ toggleable overlay layer (Surface → overlays → "drawn ROIs") alongside the b
 
 ### Editing a shape — full bezier controls
 
-Click **✎ edit** next to an ROI in the panel. The shape's anchors appear on the flatmap, and you get
-the full set of vector-editing controls:
+Click **✎ edit** next to an ROI in the panel (this re-flattens the surface if needed). The shape's
+anchors appear on the flatmap, and you get the full set of vector-editing controls:
 
 | Gesture | Action |
 | --- | --- |

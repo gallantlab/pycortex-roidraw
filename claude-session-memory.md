@@ -2,10 +2,10 @@
 
 _Current status file. Most recent session at top._
 
-## 2026-06-25 — Made roidraw public + documented it in core pycortex
+## 2026-06-25 — Public release, core-docs PR, overlay-race fix, Draw-mode UX (v0.3.1)
 
-**Goal:** make `pycortex-roidraw` available to outside pycortex users, then document
-the capability in the main pycortex docs.
+**Goal:** make `pycortex-roidraw` available to outside users; document it in core
+pycortex; fix a WebGL overlay/label texture-bake race; refine Draw-mode UX. All one day.
 
 ### pycortex-roidraw repo (this repo)
 - Added **`LICENSE`** (BSD 2-Clause, matching pycortex; copyright "2026, The Regents
@@ -23,6 +23,13 @@ the capability in the main pycortex docs.
   is not needed. Only revisit if a JS dev wants to `import` it as a library.
 - Note: `dist/` stays gitignored; the **release asset is the distribution**. Future
   JS changes need `npm run build` + a new tagged release for users to get them.
+- **v0.3.1** (commit `4a01cdc`, release published, `/releases/latest` → v0.3.1):
+  Draw-mode UX in `index.js` — (1) inflating the surface while in Draw returns to
+  Display (drawing is flat-only); (2) clicking an ROI's ✎ edit re-flattens if inflated.
+  Both via a `_flattenForDraw()` helper + a `_sawFlatInDraw` latch that ignores the
+  transient non-flat mix events during Draw's own flatten glide (so selecting Draw
+  doesn't bounce out). README updated. Interaction note: because (1) keeps Draw flat,
+  (2)'s re-flatten is usually a no-op — flagged to user, who confirmed "looks good".
 
 ### Core pycortex docs (separate repo: /Users/gallant/CLAUDE/pycortex-src)
 - Added **`docs/roidraw.rst`** — "In-browser ROI drawing" page (concise + link-out
@@ -37,11 +44,36 @@ the capability in the main pycortex docs.
 - Shipped as **PR #652** against `gallantlab/pycortex`, **merged** (squash) to `main`
   at `2cc73098`; `build-docs` check passed; PR branch auto-deleted.
 
+### WebGL overlay/label texture-bake race fix (pycortex-src) — NOT YET PUSHED
+Investigated the long-suspected overlay-toggle bug. History: fixes #643 (race guard) +
+#644 (redraw-on-bake) were merged then **both reverted** (#645/#646) because #644 caused
+**black-square labels** on load. Root cause confirmed in live code — THREE intertwined
+async bugs:
+1. `SVGOverlay.update()` bakes the overlay texture async with **no sequencing guard** →
+   rapid toggles resolve out of order → stale overlay.
+2. `addSurf` never wired `surf "update" → Viewer.schedule()` → a toggle isn't drawn
+   until next interaction.
+3. `Labels.set_tex` built the glyph texture from a **not-yet-loaded image** (empty GPU
+   upload → black squares) with no redraw on load — this is what broke #644.
+**Complete fix** on branch **`claude/overlay-bake-race-fix`** (commit `3ee0bbd3`):
+generation guard + `surf "update"→schedule` + `Labels.set_tex` waits for `img.onload`
+then signals redraw via `this.surf.dispatchEvent({type:"update"})` (routed through the
+surface's own update, NOT the overlay-texture path, so it doesn't clobber
+`uniforms.overlay.value`; no `mriview_surface.js` change needed). `node --check` passes.
+**Browser-verified** by the user against a patched copy of the real
+`viewer-stories-group-roidraw` (drawing viewer baked w/ roidraw bundle) — looked good.
+**STILL TODO: push the branch + open a PR to gallantlab/pycortex** (user hasn't decided yet).
+
 ### Branch tidy (pycortex-src)
-- Deleted merged `claude/document-roidraw` (local + remote gone), updated `main`.
-- Left intact (all UNMERGED, unrelated overlay work): `claude/overlay-redraw-on-update`,
-  `claude/overlay-toggle-race`, `claude/revert-overlay-guard`, `claude/revert-overlay-redraw`.
+- Deleted merged `claude/document-roidraw`, and the now-redundant `claude/revert-overlay-guard`
+  + `claude/revert-overlay-redraw` (their reverts already on `main` via #645/#646).
+- Kept the two original-fix branches `claude/overlay-toggle-race` +
+  `claude/overlay-redraw-on-update` (source of fix parts 1 & 2) and the new
+  `claude/overlay-bake-race-fix` (the complete fix).
 
 ### Open / next time
+- **Push `claude/overlay-bake-race-fix` + open the pycortex PR** when the user is ready.
 - pycortex docs site will surface the new roidraw page on its next build/deploy.
 - If roidraw JS changes: rebuild + cut a new release so `/releases/latest` updates.
+- Browser-test scaffolding was in the session scratchpad (1.5 GB viewer clone +
+  localhost:8911 server) — disposable, cleaned at session end.

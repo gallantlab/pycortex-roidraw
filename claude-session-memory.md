@@ -2,6 +2,42 @@
 
 _Current status file. Most recent session at top._
 
+## 2026-06-29 — Test hardening: "is it doing what we think?" → provably so (45→80 JS tests)
+
+User worried the package might not do what we think; asked what tests/checks would make it provably
+correct. Diagnosis: the pure `core/` geometry was well covered, but the ~888 LOC bridging to reality
+(adapter + controller) had **zero** tests — exactly where silent breakage hides. Did it all test-first
+(TDD skill), behavior-preserving. **No real bugs found** — the one property-test counterexample was a
+test-fidelity issue (fed buildOutline pixel-scale inputs where it wants uv-scale), not a code defect.
+
+What landed (all green: 80 JS tests + Python tooling; `npm test` now builds first via `pretest`):
+- **`core/draw-mode.js`** — extracted the flat-only Draw latch (`_sawFlatInDraw`) into a pure
+  `DrawModeMachine`; `index.js` delegates to it. The glide-doesn't-bounce-out vs.
+  inflate-after-flat-exits logic is now provable in isolation (`test/draw-mode.test.js`).
+- **`draw-pipeline.js`** — extracted the lasso→select→fit→re-derive pipeline (`deriveRoiFromLasso`,
+  `roiFromBezier`, `backfillBezier`) out of the controller; `index.js` delegates. Tested headless
+  against **`test/fake-adapter.js`** (a `ViewerAdapter` over a synthetic analytic grid) — asserts it
+  selects exactly the enclosed vertices (`test/draw-pipeline.test.js`).
+- **`test/properties.test.js`** — 7 property-based invariants over 300 seeded-random cases each
+  (lossless round-trip, seam-independent fit, no bezier blow-up, selection == point-in-polygon truth,
+  ring ⊆ selection, deterministic curve→membership, H∘H⁻¹ = id). Hand-rolled mulberry32 PRNG (no deps).
+- **`preflightHost()`** in pycortex-adapter.js — replaced 3 ad-hoc constructor throws with one
+  comprehensive, **testable** check that names exactly which pycortex internal is missing, so drift
+  fails loudly not silently (`test/host-preflight.test.js`).
+- **`test/adapter-contract.test.js`** — reflection guard: both PycortexAdapter and the fake must
+  implement the whole ViewerAdapter contract (catches "extended the interface, forgot an adapter").
+- **`test/bundle.test.js`** — loads the built `dist/roidraw.bundle.js` in a vm sandbox, asserts
+  `window.ROIDraw.{attach,autoAttach,…}` + inlined CSS. Catches a broken/half-built release artifact.
+- **`.github/workflows/test.yml`** — CI runs the whole suite on every push/PR (nothing ran before).
+- **`TESTING.md`** (+ README pointer) — documents each layer's guarantee AND the honest gap.
+
+The honest gap: unit tests can't prove the adapter talks to a LIVE pycortex viewer (its spec is
+pycortex internals we don't own). Mitigated by `preflightHost()` + the browser-verified demo viewer.
+Recommended closer (documented, not yet wired): a Playwright headless smoke against a checked-in
+viewer fixture. Commits: `ad9a3f?`-ish (this session). Note: refactor changed bundle BYTES but not
+BEHAVIOR — release asset + demo viewer still carry the behaviorally-identical v0.3.1 bundle; cut a new
+release (→ v0.3.2) only if the new internals should ship in the distributed asset (not urgent).
+
 ## 2026-06-25 (later) — Refresh the dormant demo viewer to latest-and-greatest
 
 Follow-up: confirmed the dormant demo at **`gallantlab/viewer-stories-group-roidraw`**

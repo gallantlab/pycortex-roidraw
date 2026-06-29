@@ -1,0 +1,64 @@
+# Testing & correctness
+
+`npm test` builds the bundle (via `pretest`) and runs the JS suite (`node --test`) plus the Python
+tooling tests. CI runs the same on every push/PR to `main` (`.github/workflows/test.yml`).
+
+The suite is layered by how strong a guarantee each layer can give.
+
+## What's covered
+
+### Pure geometry — property-based (near-proof)
+`test/properties.test.js` checks invariants over hundreds of seeded-random inputs (a counterexample
+prints the seed and reproduces deterministically):
+
+- export/import is lossless (vertices, outline, label, **and** the editable bezier);
+- the bezier fit is independent of where the boundary ring starts;
+- a sampled bezier never escapes the bbox of its control points (no blow-up);
+- selection selects **exactly** the vertices a polygon encloses (cross-checked against point-in-polygon);
+- the boundary ring is always a subset of the selection;
+- membership re-derived from a curve is deterministic — *what you see is what you get*;
+- a homography composed with its inverse is the identity.
+
+The example-based core tests (`geom`, `selection`, `bezier`, `transform`, `roi-model`, `outline`,
+`uv-membership`) remain as targeted cases.
+
+### Draw-mode state machine — unit (the flat-only latch)
+`core/draw-mode.js` (`test/draw-mode.test.js`) is the extracted pure state machine behind Draw mode.
+Its job is the subtle bit: the flatten **glide** emits many non-flat frames on its way to flat, and
+those must not bounce the user out of Draw — but a genuine inflate *after* reaching flat must. That
+logic is now provable in isolation instead of only eyeballed in a browser.
+
+### Draw pipeline — headless against a synthetic surface
+`draw-pipeline.js` (`test/draw-pipeline.test.js`) is the lasso → select → fit → re-derive pipeline,
+driven against `test/fake-adapter.js` (a `ViewerAdapter` over a known grid). Because the grid's
+geometry is analytic, the tests assert the pipeline selects exactly the enclosed vertices, fits an
+editable bezier, and re-derives identical membership — no browser, no pycortex.
+
+### Adapter contract + host preflight — drift guards
+- `test/adapter-contract.test.js` asserts both the real `PycortexAdapter` and the fake implement the
+  whole `ViewerAdapter` contract, so adding a contract method can't silently leave one adapter behind.
+- `preflightHost()` (`test/host-preflight.test.js`) inspects the host for every pycortex internal the
+  adapter needs and, at attach time, throws a **loud, specific** error naming what's missing — so if
+  pycortex drifts (renamed `get_position`, restructured surface), users get a clear message instead of
+  silent wrongness.
+
+### Distributed bundle — smoke
+`test/bundle.test.js` loads the freshly built `dist/roidraw.bundle.js` in a sandbox and asserts it
+exposes `window.ROIDraw.{attach,autoAttach,…}` with its CSS inlined. A broken/half-built bundle —
+exactly what a release would ship — fails here, not in someone's browser.
+
+## The remaining gap (and why)
+
+The one thing unit tests **cannot** prove is that `PycortexAdapter` talks correctly to a *live*
+pycortex viewer — its correctness is defined by pycortex/THREE internals we don't control. Two things
+mitigate this today:
+
+1. **`preflightHost()`** converts integration breakage into a clear runtime error.
+2. The public demo viewer (`gallantlab/viewer-stories-group-roidraw`) is a real baked viewer that was
+   manually browser-verified.
+
+The strongest closer would be a **headless-browser smoke test** (Playwright): load a real baked
+viewer, `autoAttach`, dispatch a synthetic lasso, click Export, assert non-empty JSON of the right
+shape — run in CI against a pinned viewer fixture. That needs a checked-in viewer fixture + a browser
+in CI, so it's deliberately *not* wired into `npm test` yet; it's the recommended next step for true
+end-to-end coverage.

@@ -154,8 +154,14 @@ npm run build      # -> dist/roidraw.bundle.js
 ## Testing
 
 ```bash
-npm test           # JS core tests (node) + Python tooling tests (bake/fixups)
+npm test           # builds the bundle, then runs the JS suite (node) + Python tooling tests
 ```
+
+The JS suite layers property-based geometry invariants, the Draw-mode state machine, the draw
+pipeline (driven headless against a synthetic-surface adapter), an adapter-contract guard, a host
+preflight, and a smoke test of the built bundle. CI (`.github/workflows/test.yml`) runs it on every
+push. See [TESTING.md](TESTING.md) for what each layer guarantees — and the one gap (live-browser
+integration) it can't.
 
 ## Requirements
 

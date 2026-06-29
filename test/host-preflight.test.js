@@ -17,6 +17,8 @@ function goodHost() {
             right: { attributes: { position: {} } },
         },
     };
+    surface.hemis.left.attributes.uv = {};
+    surface.hemis.right.attributes.uv = {};
     return {
         THREE: {},
         mriview: { get_position() {} },
@@ -54,10 +56,26 @@ test("preflight flags a viewer with no locatable Surface", () => {
 
 test("preflight flags a surface missing its position attribute", () => {
     const h = goodHost();
-    h.viewer.surfs[0].surf.hemis.left = {};   // no attributes.position
+    h.viewer.surfs[0].surf.hemis.left.attributes = { uv: {} };   // uv present, position gone
     const r = preflightHost(h);
     assert.strictEqual(r.ok, false);
     assert.ok(r.missing.some((m) => /position/.test(m)), "should name the position attribute; got " + JSON.stringify(r.missing));
+});
+
+test("preflight flags a surface missing its uv attribute (the uv path would fail silently)", () => {
+    const h = goodHost();
+    delete h.viewer.surfs[0].surf.hemis.left.attributes.uv;   // position present, uv gone
+    const r = preflightHost(h);
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.missing.some((m) => /uv/.test(m)), "should name the uv attribute; got " + JSON.stringify(r.missing));
+});
+
+test("preflight flags a missing right hemisphere (projection iterates both)", () => {
+    const h = goodHost();
+    delete h.viewer.surfs[0].surf.hemis.right;
+    const r = preflightHost(h);
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.missing.some((m) => /right/i.test(m)), "should name the right hemi; got " + JSON.stringify(r.missing));
 });
 
 test("preflight accumulates ALL problems, not just the first", () => {

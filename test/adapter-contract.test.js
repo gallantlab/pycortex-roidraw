@@ -14,11 +14,12 @@ const contractMethods = () =>
     Object.getOwnPropertyNames(ViewerAdapter.prototype)
         .filter((n) => n !== "constructor" && typeof ViewerAdapter.prototype[n] === "function");
 
-// "required" = the contract impl throws (no sensible default); "optional niceties" have defaults.
-const isRequired = (n) => ViewerAdapter.prototype[n].toString().includes("throw new Error");
-
-test("the contract exposes a non-trivial set of methods (sanity)", () => {
-    assert.ok(contractMethods().length >= 20, "expected the documented ViewerAdapter surface");
+test("the declared REQUIRED set matches the methods that actually throw (the list can't drift)", () => {
+    // cross-check the hand-maintained ViewerAdapter.REQUIRED against the source of truth: a required
+    // method is exactly one whose base impl throws. Catches the list and the stubs falling out of sync.
+    const throwers = contractMethods().filter((n) => ViewerAdapter.prototype[n].toString().includes("throw"));
+    assert.deepStrictEqual([...ViewerAdapter.REQUIRED].sort(), throwers.sort(),
+        "ViewerAdapter.REQUIRED is out of sync with the methods that throw");
 });
 
 test("PycortexAdapter overrides EVERY ViewerAdapter contract method", () => {
@@ -30,8 +31,8 @@ test("PycortexAdapter overrides EVERY ViewerAdapter contract method", () => {
 });
 
 test("FakeSurfaceAdapter overrides every REQUIRED contract method", () => {
-    for (const n of contractMethods()) {
-        if (!isRequired(n)) continue;
+    for (const n of ViewerAdapter.REQUIRED) {
+        assert.strictEqual(typeof ViewerAdapter.prototype[n], "function", `REQUIRED names a nonexistent method ${n}`);
         assert.notStrictEqual(FakeSurfaceAdapter.prototype[n], ViewerAdapter.prototype[n],
             `FakeSurfaceAdapter is missing required contract method ${n}`);
     }

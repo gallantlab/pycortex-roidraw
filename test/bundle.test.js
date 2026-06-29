@@ -38,6 +38,8 @@ test("the bundle loads in a browser-like sandbox and exposes window.ROIDraw", ()
     for (const fn of ["attach", "autoAttach", "ROIDrawer", "surfaceReady", "findSurface"]) {
         assert.strictEqual(typeof win.ROIDraw[fn], "function", `window.ROIDraw.${fn} should be a function`);
     }
+    // the teardown API must ship so a viewer can detach/re-attach without leaking
+    assert.strictEqual(typeof win.ROIDraw.ROIDrawer.prototype.destroy, "function", "ROIDrawer needs a destroy()");
 });
 
 test("the bundle inlines its CSS (single self-contained file, no external fetch)", () => {

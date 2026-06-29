@@ -17,11 +17,15 @@ export class ModeToggle {
 
     _mkBtn(label, mode, onMode) {
         const b = document.createElement("button");
+        b.type = "button";
         b.className = "roidraw-modebtn";
         b.textContent = label;
         b.onclick = () => onMode && onMode(mode);
         return b;
     }
+
+    // Remove the toggle bar from the DOM (matches the overlays' destroy(); called by ROIDrawer teardown).
+    destroy() { if (this.el && this.el.parentNode) this.el.parentNode.removeChild(this.el); this.el = null; }
 
     setMode(mode) {
         this.displayBtn.classList.toggle("roidraw-modebtn--active", mode === "display");

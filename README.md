@@ -120,6 +120,7 @@ core/      pure JS — no DOM, no THREE, no host globals (unit-tested under node
   bezier.js      fit an editable closed bezier to a ring; sample it back to a polygon
   transform.js   uv↔px homography (edit overlay only: place/grab knots in the current view)
   roi-model.js   ROI collection + the portable (de)serialization format (incl. the bezier)
+  draw-mode.js   the flat-only Draw state machine (the "reached flat" latch)
 
 adapter/   the ViewerAdapter CONTRACT + one host implementation
   viewer-adapter.js     documented interface the core/ui depend on
@@ -127,9 +128,11 @@ adapter/   the ViewerAdapter CONTRACT + one host implementation
 
 ui/        host-agnostic DOM components (talk only to core + adapter)
   lasso-overlay.js  bezier-edit-overlay.js  draw-panel.js  mode-toggle.js  roidraw.css
+  overlay-geom.js   pure hit-testing math for the edit overlay (no DOM; unit-tested)
 
-index.js   controller wiring core + adapter + ui; exposes window.ROIDraw
-build.mjs  esbuild → dist/roidraw.bundle.js (CSS inlined)
+draw-pipeline.js  lasso → select → fit bezier → re-derive membership (pure; uses core + an adapter)
+index.js          controller wiring core + adapter + ui; exposes window.ROIDraw
+build.mjs         esbuild → dist/roidraw.bundle.js (CSS inlined)
 ```
 
 ### Porting to another viewer engine
@@ -158,10 +161,10 @@ npm test           # builds the bundle, then runs the JS suite (node) + Python t
 ```
 
 The JS suite layers property-based geometry invariants, the Draw-mode state machine, the draw
-pipeline (driven headless against a synthetic-surface adapter), an adapter-contract guard, a host
-preflight, and a smoke test of the built bundle. CI (`.github/workflows/test.yml`) runs it on every
-push. See [TESTING.md](TESTING.md) for what each layer guarantees — and the one gap (live-browser
-integration) it can't.
+pipeline (driven headless against a synthetic-surface adapter), the edit-overlay hit-testing, an
+adapter-contract guard, a host preflight, and a smoke test of the built bundle. CI
+(`.github/workflows/test.yml`) runs it on every push. See [TESTING.md](TESTING.md) for what each
+layer guarantees — and the one gap (live-browser integration) it can't.
 
 ## Requirements
 

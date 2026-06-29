@@ -2,6 +2,50 @@
 
 _Current status file. Most recent session at top._
 
+## 2026-06-29 (cont.) — Adversarial audit + fixes (Tiers 1–4) + documentation audit (80→93 tests)
+
+User asked for a full adversarial readability/best-practices audit ("be mean, be neurotic"), then
+fixes, then a doc audit. Ran 4 parallel review agents (core / adapter+pipeline / ui+controller /
+tests+hygiene); verified every load-bearing finding against source myself before acting. Verdict:
+pure `core/` is excellent; the gaps were the 575-line adapter, UI lifecycle, and false-confidence in
+the tests I'd just written. **No correctness blockers.** All work test-first, behavior-preserving
+except where noted. Suite 80→93.
+
+Fixes landed (uncommitted until this "clean"; one commit on top of `359073b`):
+- **Tier 1 (footguns + my own errors):** `subsample`→`targetSamples` in measureFrame (it's a count,
+  not a stride — opposite of projectVertices); `DEFAULT_EPSILON`→`UV_RDP_EPSILON`/`PIXEL_RDP_EPSILON`
+  (same name, 1000× apart); `cloneBezier` now PADS a short `smooth` (was truncate-only); `preflightHost`
+  now checks BOTH hemis' position AND uv; CI `npm install`→`npm ci`+cache (a lockfile IS committed —
+  my earlier comment was false).
+- **Tier 2 (lifecycle/a11y/errors):** `destroy()` on ROIDrawer + DrawPanel + ModeToggle (overlays
+  already had it); stored the anonymous blur listener; `autoAttach` disposes a prior instance; delete
+  control `<a>`→`<button>`+aria-label (+CSS reset)+`type=button`; `reader.onerror`; empty-name falls
+  back to default; one-shot breadcrumbs in the silent adapter catches.
+- **Tier 3 (test false-confidence):** FakeSurfaceAdapter now uses a REAL rotation+offset projection
+  (not px==uv·scale) + disjoint-uv hemispheres; selection property uses an INDEPENDENT rectangle
+  oracle (not its own pointInPolygon); `pretest:js` (no stale bundle, single build); explicit
+  `ViewerAdapter.REQUIRED` + a drift cross-check (replaced fragile `.toString().includes`).
+- **Tier 4 (items 1–4, user-chosen from a ranked menu):** named magic numbers/strings (adapter
+  `DEFAULT_THICKMIX`/`FALLBACK_TEX_*`/`OUTLINE_STROKE_PX`/`LABEL_FONT_PT`; edit-overlay `COLOR`
+  palette+radii+`now()`; lasso color; `MODE` consts; transform epsilons; tagged measureFrame/
+  animateCamera host-only); `segControls()` dedup in bezier; `loadJSON` defensive-copy+`startsWith`+
+  shorthand; **unified label heuristic** — loadJSON now purely structural, controller back-fills a
+  missing label via new `backfillLabel()` (centroid-nearest, same rule as fresh ROIs); **extracted
+  pure hit-testing** to new `ui/overlay-geom.js` (`nearestWithin`/`hitTest`, 7 tests) — the edit
+  overlay delegates, killing the `_hitTest`/`_hitTestAnchorOnly` dup. Declined #5–#8 (UI-plumbing
+  dedup, adapter per-hemi loop, jsdom, adapter split) as churn-over-value on untested browser code;
+  skipped the shared HEMIS const (cross-module coupling > the duplication).
+- **Doc audit:** README architecture block missing the 3 new files (draw-mode, draw-pipeline,
+  overlay-geom) — added. TESTING.md said "via pretest" (→pretest:js) and "cross-checked against
+  point-in-polygon" (→ independent oracle — was the OPPOSITE of the real test). In-code: viewer-adapter
+  projectVertices "view-framing"→selection-only; geom simplifyRDP "px"→unit-agnostic; two stale
+  `_roiFromBezier` test comments → `roiFromBezier`; preflight "every internal"→"core internals".
+
+New files: `core/draw-mode.js` (earlier), `draw-pipeline.js` (earlier), `ui/overlay-geom.js`,
+`test/overlay-geom.test.js`. Behavior changes worth noting: empty-name fallback, stricter preflight,
+unified label, cloneBezier pad. **Source has moved past the v0.3.2 release** → cut v0.3.3 + re-bake the
+example viewer to keep distributed artifacts in lockstep.
+
 ## 2026-06-29 — Test hardening: "is it doing what we think?" → provably so (45→80 JS tests)
 
 User worried the package might not do what we think; asked what tests/checks would make it provably

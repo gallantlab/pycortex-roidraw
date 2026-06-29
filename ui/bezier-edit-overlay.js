@@ -25,14 +25,24 @@ import {
     cloneBezier, evalClosedBezier, moveAnchor, moveHandle, setAnchorSmooth,
     splitSegment, deleteAnchor, nearestOnClosedBezier,
 } from "../core/bezier.js";
+import { hitTest, nearestWithin } from "./overlay-geom.js";
 
 const HIT_RADIUS = 9;        // px; how close a click must be to grab an anchor
 const HANDLE_RADIUS = 8;     // px; how close a click must be to grab a tangent handle
 const CURVE_HIT = 7;         // px; how close a double-click must be to the curve to add a point
+const CURVE_HIT_SAMPLES = 24;// segments/curve sampled when finding the nearest point for a click
 const DRAG_SLOP = 1.5;       // px; movement under this counts as a click (no commit / deselect)
 const TRACK_MS = 500;        // after a zoom/pan, keep re-tracking the surface for this long
 const LOCAL_MARGIN = 0.06;   // uv padding around the ROI for the LOCAL homography fit
 const CURVE_SAMPLES = 40;    // samples/segment when stroking the preview curve (kills chord undercut)
+const ANCHOR_R = 4;          // anchor glyph radius (px); a selected/hovered anchor draws larger
+const ANCHOR_R_BIG = 6;
+const HANDLE_DOT_R = 4;      // tangent-handle dot radius (px)
+const COLOR = {              // editor palette
+    curve: "#39d0ff", handleLine: "#9fe8ff", handleFill: "#fff",
+    handleStroke: "#1f7fa0", anchorStroke: "#0a3a4a", anchorSel: "#fff",
+};
+const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 export class BezierEditOverlay {
     constructor(adapter, { onEdit } = {}) {
@@ -112,7 +122,7 @@ export class BezierEditOverlay {
     // keeps gliding for several). Instead, re-track on rAF for a short window after the gesture, so
     // the knots follow the surface every frame until the camera settles.
     _pokeTracking() {
-        this._trackUntil = (typeof performance !== "undefined" ? performance.now() : Date.now()) + TRACK_MS;
+        this._trackUntil = now() + TRACK_MS;
         if (!this._raf) this._raf = requestAnimationFrame(() => this._trackFrame());
     }
 
@@ -120,8 +130,7 @@ export class BezierEditOverlay {
         this._raf = 0;
         if (!this.roi) return;
         this.reproject();
-        const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
-        if (now < this._trackUntil) this._raf = requestAnimationFrame(() => this._trackFrame());
+        if (now() < this._trackUntil) this._raf = requestAnimationFrame(() => this._trackFrame());
     }
 
     _stopTracking() { if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; } this._trackUntil = 0; }
@@ -172,23 +181,10 @@ export class BezierEditOverlay {
 
     _evtPt(e) { const r = this.el.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
 
-    // Hit-test a point against the editable bits, nearest first: the selected anchor's two handles
-    // (they sit on top), then any anchor. Returns { kind:"handle"|"anchor", i, which? } or null.
+    // Hit-test a point against the editable bits (pure math in overlay-geom.js): the selected
+    // anchor's two handles (on top), then any anchor. Returns { kind, i, which? } or null.
     _hitTest(pt) {
-        if (this._sel >= 0 && this._handlePx) {
-            for (const which of ["out", "in"]) {
-                const hp = this._handlePx[which];
-                if (hp) { const dx = hp[0] - pt[0], dy = hp[1] - pt[1];
-                    if (dx * dx + dy * dy <= HANDLE_RADIUS * HANDLE_RADIUS) return { kind: "handle", i: this._sel, which }; }
-            }
-        }
-        let best = -1, bd = HIT_RADIUS * HIT_RADIUS;
-        for (let i = 0; i < this._anchorPx.length; i++) {
-            const a = this._anchorPx[i];
-            const dx = a[0] - pt[0], dy = a[1] - pt[1], d = dx * dx + dy * dy;
-            if (d <= bd) { bd = d; best = i; }
-        }
-        return best >= 0 ? { kind: "anchor", i: best } : null;
+        return hitTest(this._anchorPx, this._handlePx, this._sel, pt, { hitRadius: HIT_RADIUS, handleRadius: HANDLE_RADIUS });
     }
 
     // Is `pt` (px) close to the curve? Map it to uv, find the nearest curve point, map that back to
@@ -196,7 +192,7 @@ export class BezierEditOverlay {
     _hitCurve(pt) {
         if (!this.Hinv || !this.H) return null;
         const uv = applyHomography(this.Hinv, pt);
-        const hit = nearestOnClosedBezier(this.bez, uv, 24);
+        const hit = nearestOnClosedBezier(this.bez, uv, CURVE_HIT_SAMPLES);
         if (!hit) return null;
         const px = applyHomography(this.H, hit.point);
         const dx = px[0] - pt[0], dy = px[1] - pt[1];
@@ -284,15 +280,7 @@ export class BezierEditOverlay {
         }
     }
 
-    _hitTestAnchorOnly(pt) {
-        let best = -1, bd = HIT_RADIUS * HIT_RADIUS;
-        for (let i = 0; i < this._anchorPx.length; i++) {
-            const a = this._anchorPx[i];
-            const dx = a[0] - pt[0], dy = a[1] - pt[1], d = dx * dx + dy * dy;
-            if (d <= bd) { bd = d; best = i; }
-        }
-        return best;
-    }
+    _hitTestAnchorOnly(pt) { return nearestWithin(this._anchorPx, pt, HIT_RADIUS); }
 
     _onKeyDown(e) {
         if (!this.roi || this._sel < 0) return;
@@ -330,7 +318,7 @@ export class BezierEditOverlay {
         // the curve: the cached (dense) uv polyline mapped through the current homography. Dense
         // sampling means no chord undercut, so the preview matches the baked cubic outline.
         const poly = this._uvPoly.map(toPx);
-        ctx.strokeStyle = "#39d0ff";
+        ctx.strokeStyle = COLOR.curve;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(poly[0][0], poly[0][1]);
@@ -347,26 +335,26 @@ export class BezierEditOverlay {
             const out = toPx(this.bez.outHandles[this._sel]);
             const inp = toPx(this.bez.inHandles[this._sel]);
             this._handlePx = { out, in: inp };
-            ctx.strokeStyle = "#9fe8ff";
+            ctx.strokeStyle = COLOR.handleLine;
             ctx.lineWidth = 1;
             for (const hp of [out, inp]) {
                 ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(hp[0], hp[1]); ctx.stroke();
-                ctx.beginPath(); ctx.arc(hp[0], hp[1], 4, 0, Math.PI * 2);
-                ctx.fillStyle = "#fff"; ctx.fill();
-                ctx.lineWidth = 1.5; ctx.strokeStyle = "#1f7fa0"; ctx.stroke();
-                ctx.strokeStyle = "#9fe8ff"; ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.arc(hp[0], hp[1], HANDLE_DOT_R, 0, Math.PI * 2);
+                ctx.fillStyle = COLOR.handleFill; ctx.fill();
+                ctx.lineWidth = 1.5; ctx.strokeStyle = COLOR.handleStroke; ctx.stroke();
+                ctx.strokeStyle = COLOR.handleLine; ctx.lineWidth = 1;
             }
         }
 
         // the anchors: smooth = circle (●), corner = square (■). Selected = white, hovered = larger.
         ctx.lineWidth = 2;
-        ctx.strokeStyle = "#0a3a4a";
+        ctx.strokeStyle = COLOR.anchorStroke;
         const hoverI = this._hover && this._hover.kind === "anchor" ? this._hover.i : -1;
         for (let i = 0; i < this._anchorPx.length; i++) {
             const a = this._anchorPx[i];
             const big = (i === this._sel || i === hoverI);
-            const r = big ? 6 : 4;
-            ctx.fillStyle = (i === this._sel) ? "#fff" : "#39d0ff";
+            const r = big ? ANCHOR_R_BIG : ANCHOR_R;
+            ctx.fillStyle = (i === this._sel) ? COLOR.anchorSel : COLOR.curve;
             ctx.beginPath();
             if (this.bez.smooth[i]) ctx.arc(a[0], a[1], r, 0, Math.PI * 2);
             else ctx.rect(a[0] - r, a[1] - r, r * 2, r * 2);

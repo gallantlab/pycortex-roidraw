@@ -31,11 +31,9 @@ export class ROISet {
     add({ name, color, left, right, outline = null, labelVert = null, bezier = null }) {
         const roi = {
             id: this.nextId++,
-            name: name,
+            name,
             color: color || this.nextColor(),
-            left: left, right: right,
-            outline: outline, labelVert: labelVert,
-            bezier: bezier,
+            left, right, outline, labelVert, bezier,
         };
         this.rois.push(roi);
         return roi;
@@ -64,25 +62,24 @@ export class ROISet {
         };
     }
 
-    /* Append ROIs from a parsed document. Returns the ROIs added. Throws on an unknown format. */
+    /* Append ROIs from a parsed document. Returns the ROIs added. Throws on an unknown format.
+     * Purely structural: arrays are defensively copied so the model never aliases the caller's
+     * parsed JSON, and a missing labelVert is left null (the viewer back-fills it from geometry —
+     * see draw-pipeline.backfillLabel — so reloaded ROIs label the same way freshly drawn ones do). */
     loadJSON(doc) {
-        if (!doc || !doc.format || doc.format.indexOf("pycortex-roidraw") !== 0)
+        if (!doc || !doc.format || !String(doc.format).startsWith("pycortex-roidraw"))
             throw new Error("unrecognized format: " + (doc && doc.format));
         const added = [];
         for (const r of (doc.rois || [])) {
             const v = r.vertices || {};
-            const roi = this.add({
+            added.push(this.add({
                 name: r.name || ("roi" + this.nextId),
                 color: r.color,
-                left: v.left || [], right: v.right || [],
-                outline: r.outline || null,
+                left: (v.left || []).slice(), right: (v.right || []).slice(),
+                outline: r.outline ? r.outline.slice() : null,
                 labelVert: r.labelVert || null,
                 bezier: r.bezier || null,
-            });
-            // back-fill a label vertex from the ring if the file lacked one
-            if (!roi.labelVert && roi.outline && roi.outline.length)
-                roi.labelVert = roi.outline[Math.floor(roi.outline.length / 2)];
-            added.push(roi);
+            }));
         }
         return added;
     }

@@ -56,7 +56,9 @@
 .roidraw-roi__editbtn:hover:not(:disabled) { background: #1e6f8a; }
 .roidraw-roi__editbtn--on { background: #1e9fd0; border-color: #4cc6f0; color: #04222e; font-weight: 700; }
 .roidraw-roi__editbtn:disabled { opacity: 0.4; cursor: default; }
-.roidraw-roi__del { color: #f77; text-decoration: none; cursor: pointer; }
+/* a bare ✕ glyph: strip the default <button> chrome (background/border/padding) so only the × shows */
+.roidraw-roi__del { color: #f77; background: none; border: none; padding: 0; font: inherit; line-height: 1; cursor: pointer; }
+.roidraw-roi__del:hover { color: #ff9a9a; }
 .roidraw-roi--editing { outline: 1px solid rgba(57, 208, 255, 0.6); border-radius: 3px; }
 
 .roidraw-done {

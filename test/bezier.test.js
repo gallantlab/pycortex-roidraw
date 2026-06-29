@@ -107,6 +107,17 @@ test("cloneBezier: deep copy + back-fills a missing smooth array as all-true", (
     assert.strictEqual(raw.anchors[0][0], 0, "clone must not alias the source");
 });
 
+test("cloneBezier: pads a too-short smooth array to one-per-anchor (missing tail = smooth)", () => {
+    // a malformed bezier whose smooth is shorter than anchors must not leave smooth[i] undefined
+    // (undefined reads as 'corner' in moveHandle, silently breaking the curve).
+    const raw = { closed: true, anchors: [[0, 0], [1, 0], [1, 1], [0, 1]],
+                  inHandles: [[0, 0], [1, 0], [1, 1], [0, 1]], outHandles: [[0, 0], [1, 0], [1, 1], [0, 1]],
+                  smooth: [false, true] };  // only 2 of 4
+    const b = cloneBezier(raw);
+    assert.strictEqual(b.smooth.length, 4, "smooth must be one-per-anchor");
+    assert.deepStrictEqual(b.smooth, [false, true, true, true], "preserve given flags, pad tail as smooth");
+});
+
 test("moveAnchor: carries both handles by the same delta (does not mutate input)", () => {
     const bez = bezierFromAnchors(sq);
     const before = JSON.stringify(bez);

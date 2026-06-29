@@ -7,7 +7,8 @@
  * Even-odd ray-casting point-in-polygon test.
  *   pt   : [x, y]
  *   poly : [[x, y], ...]  (open ring; first/last need not repeat)
- * Returns true iff pt is strictly inside poly.
+ * Returns true if pt is inside poly. Boundary cases (a point exactly on an edge) are undefined —
+ * even-odd ray casting makes no strict-inside guarantee there.
  */
 export function pointInPolygon(pt, poly) {
     const x = pt[0], y = pt[1];
@@ -35,8 +36,9 @@ export function polygonBounds(poly) {
     return { minx, miny, maxx, maxy };
 }
 
-export function inBounds(pt, b) {
-    return pt[0] >= b.minx && pt[0] <= b.maxx && pt[1] >= b.miny && pt[1] <= b.maxy;
+/* Is point `pt` within the axis-aligned `bounds` ({minx,miny,maxx,maxy} from polygonBounds)? */
+export function inBounds(pt, bounds) {
+    return pt[0] >= bounds.minx && pt[0] <= bounds.maxx && pt[1] >= bounds.miny && pt[1] <= bounds.maxy;
 }
 
 /*
@@ -50,9 +52,9 @@ export function ndcToPixel(ndc, w, h) {
 }
 
 /*
- * Ramer–Douglas–Peucker polyline simplification. Drops points within `epsilon` px of the
- * line between kept neighbors, removing hand tremor while preserving real corners (e.g. the
- * notch of a C-shaped ROI). Endpoints are kept.
+ * Ramer–Douglas–Peucker polyline simplification. Drops points within `epsilon` (in the input's
+ * own units — px for a screen lasso, uv for a flat-UV ring) of the line between kept neighbors,
+ * removing hand tremor while preserving real corners (e.g. the notch of a C-shaped ROI). Endpoints kept.
  */
 export function simplifyRDP(points, epsilon) {
     if (points.length < 3) return points.slice();
@@ -93,7 +95,7 @@ export function simplifyRDP(points, epsilon) {
  * Point count doubles per iteration.
  */
 export function chaikin(points, iterations = 1) {
-    let pts = points;
+    let pts = points.slice();   // own a copy so we never return the caller's array
     for (let it = 0; it < iterations; it++) {
         if (pts.length < 3) break;
         const next = [];

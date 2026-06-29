@@ -1,6 +1,6 @@
 # Testing & correctness
 
-`npm test` builds the bundle (via `pretest`) and runs the JS suite (`node --test`) plus the Python
+`npm test` builds the bundle (via `pretest:js`) and runs the JS suite (`node --test`) plus the Python
 tooling tests. CI runs the same on every push/PR to `main` (`.github/workflows/test.yml`).
 
 The suite is layered by how strong a guarantee each layer can give.
@@ -14,7 +14,8 @@ prints the seed and reproduces deterministically):
 - export/import is lossless (vertices, outline, label, **and** the editable bezier);
 - the bezier fit is independent of where the boundary ring starts;
 - a sampled bezier never escapes the bbox of its control points (no blow-up);
-- selection selects **exactly** the vertices a polygon encloses (cross-checked against point-in-polygon);
+- selection selects **exactly** the vertices a polygon encloses (graded against an *independent*
+  rectangle oracle, not the impl's own point-in-polygon);
 - the boundary ring is always a subset of the selection;
 - membership re-derived from a curve is deterministic — *what you see is what you get*;
 - a homography composed with its inverse is the identity.
@@ -30,17 +31,24 @@ logic is now provable in isolation instead of only eyeballed in a browser.
 
 ### Draw pipeline — headless against a synthetic surface
 `draw-pipeline.js` (`test/draw-pipeline.test.js`) is the lasso → select → fit → re-derive pipeline,
-driven against `test/fake-adapter.js` (a `ViewerAdapter` over a known grid). Because the grid's
+driven against `test/fake-adapter.js` (a `ViewerAdapter` over a known grid). The fake projects uv→px
+through a real rotation+offset (not `px == uv·scale`) and puts the two hemispheres in disjoint uv
+bands, so the px→uv round-trip and hemisphere separation are actually exercised. Because the grid's
 geometry is analytic, the tests assert the pipeline selects exactly the enclosed vertices, fits an
 editable bezier, and re-derives identical membership — no browser, no pycortex.
+
+### Edit-overlay hit-testing — unit (pure helpers)
+`ui/overlay-geom.js` (`test/overlay-geom.test.js`) holds the grab-an-anchor / grab-a-handle math the
+edit overlay delegates to, so the hit-testing is testable without a canvas.
 
 ### Adapter contract + host preflight — drift guards
 - `test/adapter-contract.test.js` asserts both the real `PycortexAdapter` and the fake implement the
   whole `ViewerAdapter` contract, so adding a contract method can't silently leave one adapter behind.
-- `preflightHost()` (`test/host-preflight.test.js`) inspects the host for every pycortex internal the
-  adapter needs and, at attach time, throws a **loud, specific** error naming what's missing — so if
-  pycortex drifts (renamed `get_position`, restructured surface), users get a clear message instead of
-  silent wrongness.
+- `preflightHost()` (`test/host-preflight.test.js`) inspects the host for the core pycortex internals
+  the adapter needs (THREE, `mriview.get_position`, the surface + pivots, and **both** hemispheres'
+  `position` and `uv` geometry, svgoverlay) and, at attach time, throws a **loud, specific** error
+  naming what's missing — so if pycortex drifts (renamed `get_position`, restructured surface), users
+  get a clear message instead of silent wrongness.
 
 ### Distributed bundle — smoke
 `test/bundle.test.js` loads the freshly built `dist/roidraw.bundle.js` in a sandbox and asserts it

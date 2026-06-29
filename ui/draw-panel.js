@@ -22,6 +22,7 @@ export class DrawPanel {
 
         // big, obvious "finish editing" control — shown only while a shape is being edited
         this.doneEl = document.createElement("button");
+        this.doneEl.type = "button";
         this.doneEl.className = "roidraw-done";
         this.doneEl.textContent = "✓ Done editing";
         this.doneEl.style.display = "none";
@@ -33,6 +34,7 @@ export class DrawPanel {
         el.appendChild(this.listEl);
 
         const exp = document.createElement("button");
+        exp.type = "button";
         exp.textContent = "Export JSON";
         exp.onclick = () => onExport && onExport();
         el.appendChild(exp);
@@ -52,6 +54,7 @@ export class DrawPanel {
         el.appendChild(lab);
 
         const clr = document.createElement("button");
+        clr.type = "button";
         clr.textContent = "Clear all";
         clr.onclick = () => onClear && onClear();
         el.appendChild(clr);
@@ -76,6 +79,9 @@ export class DrawPanel {
     message(text) { this.msgEl.textContent = text; }
 
     setVisible(on) { this.el.style.display = on ? "" : "none"; }
+
+    // Remove the panel from the DOM (matches the overlays' destroy(); called by ROIDrawer teardown).
+    destroy() { if (this.el && this.el.parentNode) this.el.parentNode.removeChild(this.el); this.el = null; }
 
     renderList(rois) {
         // surface the editing ROI's name on the big Done button (and show/hide it)
@@ -114,6 +120,7 @@ export class DrawPanel {
 
             // edit toggle — a real button (bigger hit target); only ROIs with a bezier can edit
             const edit = document.createElement("button");
+            edit.type = "button";
             edit.className = "roidraw-roi__editbtn" + (editing ? " roidraw-roi__editbtn--on" : "");
             edit.textContent = editing ? "editing" : "✎ edit";
             edit.title = r.bezier ? (editing ? "finish editing" : "edit shape") : "no editable curve";
@@ -121,10 +128,13 @@ export class DrawPanel {
             edit.onclick = (e) => { e.preventDefault(); if (r.bezier) this.onEdit(editing ? null : r.id); };
             row.appendChild(edit);
 
-            const del = document.createElement("a");
+            // a real <button> (keyboard-focusable + activatable), not an href-less <a>
+            const del = document.createElement("button");
+            del.type = "button";
             del.className = "roidraw-roi__del";
             del.textContent = "✕";
             del.title = "remove";
+            del.setAttribute("aria-label", "remove " + r.name);
             del.onclick = (e) => { e.preventDefault(); this.onRemove(r.id); };
             row.appendChild(del);
 

@@ -7,16 +7,17 @@
  */
 import { simplifyRDP } from "./geom.js";
 
-// RDP tolerance — removes hand tremor, keeps concave corners. In the SAME units as `lasso`/`sel.px`:
-// the default suits a screen-pixel lasso; a uv-space caller ([0,1]) MUST pass a uv-scale epsilon.
-const DEFAULT_EPSILON = 4;
+// RDP tolerance in PIXEL units — removes hand tremor, keeps concave corners. In the SAME units as
+// `lasso`/`sel.px`: the default suits a screen-pixel lasso; a uv-space caller ([0,1]) MUST pass a
+// uv-scale epsilon (cf. bezier.js's UV_RDP_EPSILON, ~1000× smaller — a different coordinate space).
+const PIXEL_RDP_EPSILON = 4;
 
 /*
  * lasso : [[x,y], ...]
  * sel   : { left:[idx], right:[idx], px:{left:[[x,y]], right:[[x,y]]} } from selectInPolygon
  * Returns an ordered ring [{ h:"left"|"right", g:subjectIdx }, ...] (>= 3) or null.
  */
-export function buildOutline(lasso, sel, { epsilon = DEFAULT_EPSILON } = {}) {
+export function buildOutline(lasso, sel, { epsilon = PIXEL_RDP_EPSILON } = {}) {
     let simp = simplifyRDP(lasso, epsilon);
     if (simp.length < 3) simp = lasso;
 

@@ -29,6 +29,19 @@ export function backfillBezier(adapter, ring) {
     return ringUv && ringUv.length >= 3 ? fitClosedBezier(ringUv) : null;
 }
 
+// Pick a label vertex for an imported ROI whose file lacked one, using the SAME rule as freshly
+// drawn ROIs (pickLabelVertex: the boundary vertex nearest the centroid, computed in flat-UV).
+// Returns {h,g} or null. So reloaded and fresh ROIs label identically.
+export function backfillLabel(adapter, ring) {
+    if (!ring) return null;
+    const sel = { left: [], right: [], px: { left: [], right: [] } };
+    for (const o of ring) {
+        const uv = adapter.vertexUV(o);
+        if (uv) { sel[o.h].push(o.g); sel.px[o.h].push(uv); }   // feed uv where pickLabelVertex expects px
+    }
+    return pickLabelVertex(sel);
+}
+
 /*
  * Derive ROI membership + outline + label from a bezier, entirely in flat-UV (view-independent, so a
  * reloaded ROI selects the same vertices). selectInPolygon/buildOutline are coordinate-space

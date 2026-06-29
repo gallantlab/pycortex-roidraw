@@ -14,7 +14,9 @@
  */
 import { simplifyRDP, centroid } from "./geom.js";
 
-const DEFAULT_EPSILON = 0.004; // RDP tolerance in uv units (~0.4% of the flatmap) — drops tremor
+// RDP tolerance in UV units (~0.4% of the flatmap) — drops tremor. Note: outline.js has its own
+// PIXEL_RDP_EPSILON in *pixel* units (~1000× this); the two live in different coordinate spaces.
+const UV_RDP_EPSILON = 0.004;
 
 /* Catmull-Rom -> cubic-bezier tangent handles for a CLOSED ring of anchors. Returns
  * { inHandles, outHandles } parallel to `anchors`; out[i]/in[i] are mirrored about anchor i. */
@@ -60,7 +62,7 @@ function rotateToExtreme(pts) {
  * ring : [[u,v], ...] (>= 3). epsilon: RDP tolerance in uv units.
  * Returns { closed:true, anchors:[[u,v]], inHandles:[[u,v]], outHandles:[[u,v]] } or null.
  */
-export function fitClosedBezier(ring, { epsilon = DEFAULT_EPSILON } = {}) {
+export function fitClosedBezier(ring, { epsilon = UV_RDP_EPSILON } = {}) {
     if (!ring || ring.length < 3) return null;
     let pts = ring.slice();
     // drop a duplicated closing point so the ring has no zero-length edge. Guard with > 3 so a
@@ -86,6 +88,13 @@ function cubicAt(p0, c1, c2, p3, t) {
             a * p0[1] + b * c1[1] + c * c2[1] + d * p3[1]];
 }
 
+// The four control points of closed-bezier segment i (anchor i → anchor i+1):
+// [start anchor, its out-handle, the next anchor's in-handle, the next anchor].
+function segControls(anchors, inHandles, outHandles, i) {
+    const j = (i + 1) % anchors.length;
+    return [anchors[i], outHandles[i], inHandles[j], anchors[j]];
+}
+
 /*
  * Sample a closed bezier to a polyline. samplesPerSeg points per segment (the segment's start
  * anchor, then interior samples; the next anchor is the next segment's start). Returns a closed
@@ -97,8 +106,7 @@ export function evalClosedBezier(bez, samplesPerSeg = 12) {
     const n = anchors.length, out = [];
     const steps = Math.max(1, samplesPerSeg | 0);
     for (let i = 0; i < n; i++) {
-        const j = (i + 1) % n;
-        const p0 = anchors[i], c1 = outHandles[i], c2 = inHandles[j], p3 = anchors[j];
+        const [p0, c1, c2, p3] = segControls(anchors, inHandles, outHandles, i);
         for (let s = 0; s < steps; s++) out.push(cubicAt(p0, c1, c2, p3, s / steps));
     }
     return out;
@@ -123,7 +131,9 @@ export function cloneBezier(bez) {
         anchors: bez.anchors.map((p) => [p[0], p[1]]),
         inHandles: bez.inHandles.map((p) => [p[0], p[1]]),
         outHandles: bez.outHandles.map((p) => [p[0], p[1]]),
-        smooth: bez.smooth ? bez.smooth.slice(0, n) : bez.anchors.map(() => true),
+        // one smooth flag per anchor: truncate an over-long array, pad a too-short one with `true`
+        // (a missing flag must default to smooth, not leak `undefined` which reads as a corner).
+        smooth: Array.from({ length: n }, (_, i) => (bez.smooth && i < bez.smooth.length) ? bez.smooth[i] : true),
     };
 }
 
@@ -214,8 +224,7 @@ export function nearestOnClosedBezier(bez, pt, samplesPerSeg = 24) {
     const n = anchors.length, steps = Math.max(2, samplesPerSeg | 0);
     let best = null;
     for (let i = 0; i < n; i++) {
-        const j = (i + 1) % n;
-        const p0 = anchors[i], c1 = outHandles[i], c2 = inHandles[j], p3 = anchors[j];
+        const [p0, c1, c2, p3] = segControls(anchors, inHandles, outHandles, i);
         for (let s = 0; s <= steps; s++) {
             const t = s / steps, q = cubicAt(p0, c1, c2, p3, t);
             const dx = q[0] - pt[0], dy = q[1] - pt[1], d = dx * dx + dy * dy;

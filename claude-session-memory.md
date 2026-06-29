@@ -38,10 +38,15 @@ viewer fixture. Commits: `4c3f53e` (suite) + `6b14cb0` (v0.3.2 bump).
 
 **Released v0.3.2** (tag + GitHub release, `/releases/latest` → v0.3.2, asset 89,140 B). Refactor is
 behavior-identical to v0.3.1; released anyway so the distributed asset tracks the CI-tested source
-(no stale-bundle drift). STILL PINNED at v0.3.1: the demo viewer
-`gallantlab/viewer-stories-group-roidraw` (self-contained static file) — re-bake to v0.3.2 to align it
-(optional; behavior identical). Principle established with user: keep distributed artifacts in lockstep
-with tested source rather than letting them drift.
+(no stale-bundle drift). Principle established with user: keep distributed artifacts in lockstep with
+tested source rather than letting them drift.
+
+**Demo viewer re-baked to v0.3.2** — `gallantlab/viewer-stories-group-roidraw` commit `8adf85dc69`:
+swapped in the v0.3.2 bundle (byte-identical to the release asset, SHA verified; viewer.html overlay
+fix untouched). All three artifacts now aligned: roidraw `/releases/latest`=v0.3.2, demo viewer=v0.3.2,
+pycortex docs auto-track `/releases/latest`. Detection note: v0.3.2 EXTRACTED the `_sawFlatInDraw`
+latch into DrawModeMachine, so that old marker is gone — verify v0.3.2 via positive markers
+`DrawModeMachine` / `deriveRoiFromLasso` / `preflightHost` instead.
 
 ## 2026-06-25 (later) — Refresh the dormant demo viewer to latest-and-greatest
 

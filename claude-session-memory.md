@@ -34,9 +34,14 @@ What landed (all green: 80 JS tests + Python tooling; `npm test` now builds firs
 The honest gap: unit tests can't prove the adapter talks to a LIVE pycortex viewer (its spec is
 pycortex internals we don't own). Mitigated by `preflightHost()` + the browser-verified demo viewer.
 Recommended closer (documented, not yet wired): a Playwright headless smoke against a checked-in
-viewer fixture. Commits: `ad9a3f?`-ish (this session). Note: refactor changed bundle BYTES but not
-BEHAVIOR — release asset + demo viewer still carry the behaviorally-identical v0.3.1 bundle; cut a new
-release (→ v0.3.2) only if the new internals should ship in the distributed asset (not urgent).
+viewer fixture. Commits: `4c3f53e` (suite) + `6b14cb0` (v0.3.2 bump).
+
+**Released v0.3.2** (tag + GitHub release, `/releases/latest` → v0.3.2, asset 89,140 B). Refactor is
+behavior-identical to v0.3.1; released anyway so the distributed asset tracks the CI-tested source
+(no stale-bundle drift). STILL PINNED at v0.3.1: the demo viewer
+`gallantlab/viewer-stories-group-roidraw` (self-contained static file) — re-bake to v0.3.2 to align it
+(optional; behavior identical). Principle established with user: keep distributed artifacts in lockstep
+with tested source rather than letting them drift.
 
 ## 2026-06-25 (later) — Refresh the dormant demo viewer to latest-and-greatest
 

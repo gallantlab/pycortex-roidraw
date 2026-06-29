@@ -43,8 +43,14 @@ Fixes landed (uncommitted until this "clean"; one commit on top of `359073b`):
 
 New files: `core/draw-mode.js` (earlier), `draw-pipeline.js` (earlier), `ui/overlay-geom.js`,
 `test/overlay-geom.test.js`. Behavior changes worth noting: empty-name fallback, stricter preflight,
-unified label, cloneBezier pad. **Source has moved past the v0.3.2 release** → cut v0.3.3 + re-bake the
-example viewer to keep distributed artifacts in lockstep.
+unified label, cloneBezier pad. Audit-fix commit `0aec331`.
+
+**Released v0.3.3** (commit `19cb8d0`, tag + GitHub release, `/releases/latest` → v0.3.3, asset
+94,012 B) so the audit fixes ship. **Example viewer re-baked to v0.3.3** —
+`gallantlab/viewer-stories-group-roidraw` commit `e2a2726abb`: swapped in the v0.3.3 bundle
+(byte-identical to the release asset, verified; viewer.html overlay fix intact). All three artifacts
+aligned again: roidraw `/releases/latest`=v0.3.3, example viewer=v0.3.3, pycortex docs auto-track
+`/releases/latest`. (Detect v0.3.3 via positive marker `backfillLabel`.)
 
 ## 2026-06-29 — Test hardening: "is it doing what we think?" → provably so (45→80 JS tests)
 

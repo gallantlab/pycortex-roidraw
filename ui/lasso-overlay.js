@@ -6,7 +6,9 @@
  * Committed ROIs are NOT drawn here (the adapter renders them into the surface); this only
  * shows the in-progress lasso, and drawing happens at full-flat so it never needs reprojection.
  */
-const DRAG_THRESHOLD = 4; // px; distinguishes a Shift-click (inspect) from a Shift-drag
+const DRAG_THRESHOLD = 4;       // px; distinguishes a Shift-click (inspect) from a Shift-drag
+const LASSO_STROKE = "#ffcc00"; // in-progress lasso outline color
+const LASSO_WIDTH = 1.5;
 
 export class LassoOverlay {
     constructor(adapter, { onLasso, onInspect } = {}) {
@@ -154,8 +156,8 @@ export class LassoOverlay {
         if (!ctx) return;
         ctx.clearRect(0, 0, this.el.width, this.el.height);
         if (this.lasso.length > 1) {
-            ctx.strokeStyle = "#ffcc00";
-            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = LASSO_STROKE;
+            ctx.lineWidth = LASSO_WIDTH;
             ctx.beginPath();
             ctx.moveTo(this.lasso[0][0], this.lasso[0][1]);
             for (let j = 1; j < this.lasso.length; j++) ctx.lineTo(this.lasso[j][0], this.lasso[j][1]);

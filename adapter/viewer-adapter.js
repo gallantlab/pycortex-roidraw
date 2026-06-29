@@ -34,8 +34,8 @@ export class ViewerAdapter {
 
     /**
      * Project the surface's vertices to screen px at the CURRENT view, dropping anything
-     * behind the camera. Used for selection and view-framing.
-     * @param {{subsample?:number}} [opts] keep ~1 of every `subsample` vertices (framing only).
+     * behind the camera. Used for lasso selection (the host's own view framing is internal).
+     * @param {{subsample?:number}} [opts] keep ~1 of every `subsample` vertices (a stride; selection passes 1).
      * @returns {{left:{idx:number[], px:[number,number][]}, right:{...}}}  in-frustum verts.
      */
     projectVertices(_opts) { throw new Error("ViewerAdapter.projectVertices not implemented"); }
@@ -116,3 +116,14 @@ export class ViewerAdapter {
     /** Show/hide the host's control panel when switching Display/Draw modes. */
     setControlPanelVisible(_visible) {}
 }
+
+// The methods an implementation MUST provide (every one above that throws). The "optional niceties"
+// — inspectAt/zoom/pan/controlPanelRect/collapseControlPanel/setControlPanelVisible — have working
+// defaults. Declared explicitly (not inferred from the source text) so the conformance test has a
+// stable contract to check against. Keep in sync when adding a required method.
+ViewerAdapter.REQUIRED = [
+    "surfaceId", "isFlat", "viewportSize", "canvas",
+    "projectVertices", "allVertexUV", "vertexUV", "projectVerticesInUvBounds",
+    "setOverlayLayer", "setLayerVisible", "flatten",
+    "setCameraTarget", "setCameraRadius", "cameraRadius", "requestRender", "onMixChange",
+];

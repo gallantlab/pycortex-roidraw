@@ -10,6 +10,10 @@
  * H is a row-major 9-array [h0..h8]:  [u' v' w'] = H * [x y 1];  result = [u'/w', v'/w'].
  */
 
+const PIVOT_EPS = 1e-12;   // Gaussian-elimination pivot below this ⇒ treat the system as singular
+const W_EPS = 1e-12;       // projective divisor |w| below this ⇒ clamp (point on/near the vanishing line)
+const DET_EPS = 1e-12;     // |det| below this ⇒ the homography isn't invertible
+
 /* Solve A x = b for an n x n system (Gaussian elimination, partial pivoting). Returns x or null. */
 function solve(A, b) {
     const n = b.length;
@@ -17,7 +21,7 @@ function solve(A, b) {
     for (let col = 0; col < n; col++) {
         let piv = col;
         for (let r = col + 1; r < n; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
-        if (Math.abs(M[piv][col]) < 1e-12) return null; // singular
+        if (Math.abs(M[piv][col]) < PIVOT_EPS) return null; // singular
         const tmp = M[col]; M[col] = M[piv]; M[piv] = tmp;
         const pv = M[col][col];
         for (let j = col; j <= n; j++) M[col][j] /= pv;
@@ -94,7 +98,7 @@ export function applyHomography(H, pt) {
     let w = H[6] * x + H[7] * y + H[8];
     // guard the projective divide: a point on/near the vanishing line gives Infinity/NaN, which
     // must never reach a stored anchor. Clamp a tiny or non-finite w to a tiny magnitude instead.
-    if (!isFinite(w) || Math.abs(w) < 1e-12) w = w < 0 ? -1e-12 : 1e-12;
+    if (!isFinite(w) || Math.abs(w) < W_EPS) w = w < 0 ? -W_EPS : W_EPS;
     return [(H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w];
 }
 
@@ -103,7 +107,7 @@ export function invertHomography(H) {
     const a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7], i = H[8];
     const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
     const det = a * A + b * B + c * C;
-    if (Math.abs(det) < 1e-12) return null;
+    if (Math.abs(det) < DET_EPS) return null;
     const id = 1 / det;
     return [
         A * id, (c * h - b * i) * id, (b * f - c * e) * id,

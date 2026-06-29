@@ -36,14 +36,24 @@ test("toJSON/loadJSON round-trips vertices + outline + labelVert", () => {
     assert.deepStrictEqual(s2.rois[0].labelVert, { h: "left", g: 11 });
 });
 
-test("loadJSON: back-fills labelVert from the outline when missing", () => {
+test("loadJSON: leaves labelVert null when missing (the viewer back-fills it from geometry)", () => {
+    // loadJSON is purely structural — it never invents a label vertex (no coordinates here).
+    // The controller fills a missing label via draw-pipeline.backfillLabel using the adapter's uv.
     const s = new ROISet();
     const [roi] = s.loadJSON({
         format: FORMAT,
         rois: [{ name: "x", vertices: { left: [1, 2, 3], right: [] },
                  outline: [{ h: "left", g: 1 }, { h: "left", g: 2 }, { h: "left", g: 3 }] }],
     });
-    assert.deepStrictEqual(roi.labelVert, { h: "left", g: 2 });
+    assert.strictEqual(roi.labelVert, null);
+});
+
+test("loadJSON: defensively copies arrays (no aliasing of the caller's parsed JSON)", () => {
+    const s = new ROISet();
+    const src = { left: [1, 2], right: [], outline: [{ h: "left", g: 1 }] };
+    const [roi] = s.loadJSON({ format: FORMAT, rois: [{ name: "x", vertices: { left: src.left, right: src.right }, outline: src.outline }] });
+    roi.left.push(999);
+    assert.deepStrictEqual(src.left, [1, 2], "mutating the model must not touch the source array");
 });
 
 test("toJSON/loadJSON round-trips the editable bezier", () => {

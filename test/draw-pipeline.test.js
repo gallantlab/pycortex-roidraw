@@ -7,23 +7,27 @@
 import test from "node:test";
 import assert from "node:assert";
 import { FakeSurfaceAdapter } from "./fake-adapter.js";
-import { deriveRoiFromLasso, roiFromBezier, backfillBezier } from "../draw-pipeline.js";
+import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel } from "../draw-pipeline.js";
 import { bezierFromAnchors, evalClosedBezier } from "../core/bezier.js";
 import { pointInPolygon } from "../core/geom.js";
 
-// grid 11x11: vertex (i,j) has subject index i*11+j, uv [i/10, j/10], px uv*1000.
+// grid 11x11: vertex (i,j) has subject index i*11+j, uv [i/10, j/10]. px is a REAL rotated/offset
+// projection of uv (see fake-adapter.js), so px-space lassos must round-trip through that transform.
 const adapter = () => new FakeSurfaceAdapter({ grid: 11 });
 const uvOf = (g) => [Math.floor(g / 11) / 10, (g % 11) / 10];
+// build a px lasso by projecting a uv rectangle's corners through the same projection the surface uses
+const lassoUvRect = (a, u0, v0, u1, v1) =>
+    [[u0, v0], [u1, v0], [u1, v1], [u0, v1]].map(([u, v]) => a.projectUv("left", u, v));
 
 test("deriveRoiFromLasso: selects the enclosed grid vertices and fits a bezier", () => {
     const a = adapter();
-    // a px square covering uv [0.25, 0.75]
-    const pts = [[250, 250], [750, 250], [750, 750], [250, 750]];
+    // lasso the PROJECTED image of the uv square [0.25, 0.75] — a rotated quad in px space
+    const pts = lassoUvRect(a, 0.25, 0.25, 0.75, 0.75);
     const roi = deriveRoiFromLasso(a, pts);
 
     assert.ok(roi && roi.total > 0, "should select something");
     assert.ok(roi.bezier, "should fit an editable bezier");
-    assert.strictEqual(roi.right.length, 0, "a left-side lasso must not select the far right vertex");
+    assert.strictEqual(roi.right.length, 0, "a left-side lasso must not select the beside-it right hemisphere grid");
 
     const selected = new Set(roi.left);
     for (const g of a.allVertexUV().left.idx) {
@@ -39,9 +43,10 @@ test("deriveRoiFromLasso: selects the enclosed grid vertices and fits a bezier",
     assert.ok(inSel.has(roi.labelVert.g), "label vertex must be in the selection");
 });
 
-test("deriveRoiFromLasso: a lasso enclosing nothing selects nothing", () => {
+test("deriveRoiFromLasso: a lasso in a gap BETWEEN grid rows selects nothing", () => {
     const a = adapter();
-    const pts = [[5300, 5300], [5400, 5300], [5400, 5400], [5300, 5400]]; // empty region, far from the grid
+    // grid vertices sit at uv multiples of 0.1; this rect lives strictly between rows/cols → no vertex
+    const pts = lassoUvRect(a, 0.42, 0.42, 0.48, 0.48);
     const roi = deriveRoiFromLasso(a, pts);
     assert.strictEqual(roi.total, 0);
 });
@@ -82,14 +87,29 @@ test("backfillBezier: returns null when the ring has too few uv-resolvable point
     assert.strictEqual(backfillBezier(a, [{ h: "left", g: 0 }, { h: "left", g: 1 }]), null);
 });
 
+test("backfillLabel: picks the ring vertex nearest the centroid (same rule as fresh ROIs)", () => {
+    const a = adapter();
+    // a small square ring around uv (0.4..0.6); the centroid sits at (0.5,0.5). Add a center vertex
+    // (5,5)=uv(0.5,0.5) which must win as nearest-to-centroid.
+    const corner = (i, j) => ({ h: "left", g: i * 11 + j });
+    const ring = [corner(4, 4), corner(6, 4), corner(6, 6), corner(4, 6), corner(5, 5)];
+    const lv = backfillLabel(a, ring);
+    assert.deepStrictEqual(lv, { h: "left", g: 5 * 11 + 5 }, "the centre vertex is nearest the centroid");
+});
+
+test("backfillLabel: returns null for an empty/uv-less ring", () => {
+    assert.strictEqual(backfillLabel(adapter(), []), null);
+});
+
 test("round-trip: a drawn lasso's bezier re-derives a non-empty membership inside the lassoed region", () => {
     const a = adapter();
-    const pts = [[300, 300], [700, 300], [700, 700], [300, 700]];
+    const pts = lassoUvRect(a, 0.3, 0.3, 0.7, 0.7);
     const roi = deriveRoiFromLasso(a, pts);
     const again = roiFromBezier(a, roi.bezier);
     assert.ok(again.total > 0, "re-deriving from the stored bezier must still select vertices");
     for (const g of again.left) {
         const [u, v] = uvOf(g);
-        assert.ok(u >= 0.2 && u <= 0.8 && v >= 0.2 && v <= 0.8, `re-derived vertex ${g} should sit within the lassoed region`);
+        // tight: every re-derived vertex must lie within the actual lassoed uv rectangle [0.3,0.7]
+        assert.ok(u >= 0.3 && u <= 0.7 && v >= 0.3 && v <= 0.7, `re-derived vertex ${g} (uv ${u},${v}) should sit within the lassoed region`);
     }
 });

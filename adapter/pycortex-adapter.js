@@ -24,13 +24,18 @@ const HEMIS = ["left", "right"];
 // Tunable pycortex-specific constants (kept here, in the host adapter, where they belong).
 const FLAT_THRESHOLD = 0.999;     // surfmix at/above this counts as "fully flat" (drawing-enabled)
 const DEFAULT_FILL = 0.70;        // measureFrame: fraction of the viewport the brain should fill
-const FRAME_SUBSAMPLE = 250;      // measureFrame: ~vertices/hemi sampled for COM + extent
+const FRAME_TARGET_SAMPLES = 250; // measureFrame: ~vertices/hemi to KEEP for COM + extent (a target count, NOT a stride — contrast projectVertices' `subsample`)
 const ZOOM_SENSITIVITY = 0.001;   // wheel deltaY -> radius factor exp(deltaY * this)
 const DEFAULT_FOV_DEG = 35;       // fallback if the camera has no .fov
 const OVERLAY_RETRY_MAX = 40;     // applyHostDefaults: tries waiting for the async SVG overlay
 const OVERLAY_RETRY_MS = 250;     // ...interval between those tries
 const COLLAPSE_SCHEDULE_MS = [400, 1200, 2500, 4500]; // re-collapse the late "data layers" folder
 const COLLAPSE_WINDOW_MS = 8000;  // ...and on setData within this startup window only
+const DEFAULT_THICKMIX = 0.5;     // thick-surface blend fed to get_position (constant; we don't expose it)
+const FALLBACK_TEX_W = 1024;      // overlay viewBox width fallback when the surface reports no size
+const FALLBACK_TEX_H = 768;       // overlay viewBox height fallback
+const OUTLINE_STROKE_PX = 3;      // ROI white-outline stroke width, in overlay viewBox px
+const LABEL_FONT_PT = 14;         // ROI label font size, in pt
 
 // Vertex count of a THREE BufferAttribute (pycortex's old three.js lacks `.count`).
 function attrCount(attr) {
@@ -52,7 +57,7 @@ export function findSurface(viewer) {
 }
 
 /*
- * Inspect the host for every pycortex internal the adapter depends on. Returns { ok, missing:[…] }
+ * Inspect the host for the core pycortex internals the adapter depends on. Returns { ok, missing:[…] }
  * naming each absent capability, so attach() can fail LOUDLY and specifically when pycortex drifts
  * (a renamed get_position, a restructured surface) instead of misbehaving silently. Pure — takes
  * the host pieces explicitly so it is unit-testable without globals or a browser.
@@ -66,9 +71,16 @@ export function preflightHost({ THREE, mriview, svgoverlay, viewer } = {}) {
     if (!surface) missing.push("Surface (viewer.surfs[].surf with .pivots)");
     else {
         if (!surface.pivots) missing.push("surface.pivots (morph transform chain)");
-        const h = surface.hemis;
-        if (!h || !h.left || !h.left.attributes || !h.left.attributes.position)
-            missing.push("surface.hemis.left.attributes.position (vertex geometry)");
+        // Projection + selection iterate BOTH hemis and read each one's position AND uv geometry
+        // (allVertexUV/vertexUV/projectVerticesInUvBounds dereference attributes.uv.array). Check
+        // every one so the uv path fails loudly here instead of silently `continue`-ing later.
+        const h = surface.hemis || {};
+        for (const side of ["left", "right"]) {
+            const hemi = h[side];
+            if (!hemi || !hemi.attributes) { missing.push(`surface.hemis.${side} (hemisphere geometry)`); continue; }
+            if (!hemi.attributes.position) missing.push(`surface.hemis.${side}.attributes.position (vertex geometry)`);
+            if (!hemi.attributes.uv) missing.push(`surface.hemis.${side}.attributes.uv (flat-UV coords)`);
+        }
     }
     if (!svgoverlay) missing.push("svgoverlay (global, ROI overlay rendering)");
     return { ok: missing.length === 0, missing };
@@ -100,7 +112,7 @@ export class PycortexAdapter extends ViewerAdapter {
         this._layerName = layerName;
         this._animSpeedFallback = animSpeedFallback;
         this._v = new this.THREE.Vector3();
-        this._thickmix = 0.5;
+        this._thickmix = DEFAULT_THICKMIX;
         this._drawn = null;          // { layerEl, labels } for the current overlay layer
         this._layerHidden = false;
         this._labelsHidden = false;
@@ -113,7 +125,7 @@ export class PycortexAdapter extends ViewerAdapter {
         try {
             const d = this.viewer.active && this.viewer.active.data && this.viewer.active.data[0];
             if (d && d.subject) return d.subject;
-        } catch (e) { /* fall through */ }
+        } catch (e) { console.debug("[roidraw] surfaceId lookup failed, using 'unknown':", e); }
         return "unknown";
     }
 
@@ -140,7 +152,10 @@ export class PycortexAdapter extends ViewerAdapter {
                 const m = this.viewer.setMix();
                 if (typeof m === "number") return m;
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {
+            // hot path (every mix frame) — warn once so a real break is visible without spamming.
+            if (!this._mixWarned) { this._mixWarned = true; console.warn("[roidraw] reading surfmix failed; treating as not-flat:", e); }
+        }
         return 0;
     }
 
@@ -249,7 +264,8 @@ export class PycortexAdapter extends ViewerAdapter {
 
     // Center of mass (world) + the camera radius that fills `fillTarget` of the viewport.
     // fill is the on-screen NDC extent (canvas-size independent); on-screen size ∝ 1/radius.
-    measureFrame(fillTarget = DEFAULT_FILL, subsample = FRAME_SUBSAMPLE) {
+    // (host-only — used by the controller's framing; not part of the portable ViewerAdapter contract.)
+    measureFrame(fillTarget = DEFAULT_FILL, targetSamples = FRAME_TARGET_SAMPLES) {
         const ctrl = this.viewer.controls;
         if (!ctrl || typeof ctrl.radius !== "number") return null;
         const { cam, surfmix, foy, W, H } = this._prepProjection();
@@ -259,7 +275,7 @@ export class PycortexAdapter extends ViewerAdapter {
             const pivot = this.surface.pivots[h].back;
             pivot.updateMatrixWorld(true);
             const mw = pivot.matrixWorld, pd = this.posdata[h], n = attrCount(pd.positions[0]);
-            const step = Math.max(1, Math.floor(n / subsample));
+            const step = Math.max(1, Math.floor(n / targetSamples));   // targetSamples = COUNT to keep, not a stride
             for (let i = 0; i < n; i += step) {
                 const w = this._worldOf(pd, mw, i, surfmix, foy);
                 sx += w.x; sy += w.y; sz += w.z; count++;
@@ -340,6 +356,7 @@ export class PycortexAdapter extends ViewerAdapter {
     }
 
     // Smooth state transition using the viewer's own animation (same as its toolbar buttons).
+    // (host-only — used by the controller's framing/flatten; not part of the portable contract.)
     animateCamera({ target, radius, mix }) {
         const sp = this._animSpeed(), anim = [];
         if (target) anim.push({ state: "camera.target", idx: sp, value: [target[0], target[1], target[2]] });
@@ -347,7 +364,8 @@ export class PycortexAdapter extends ViewerAdapter {
         if (mix != null) anim.push({ state: "mix", idx: sp, value: mix });
         if (!anim.length) return;
         try { this.viewer.animate(anim); }
-        catch (e) {                                   // fallback: snap
+        catch (e) {                                   // fallback: snap straight to the target
+            console.warn("[roidraw] viewer.animate failed; snapping instead:", e);
             if (target) this.setCameraTarget(target);
             if (radius != null) this.setCameraRadius(radius);
             if (mix != null && typeof this.viewer.setMix === "function") this.viewer.setMix(mix);
@@ -414,14 +432,14 @@ export class PycortexAdapter extends ViewerAdapter {
             if (d) {
                 const path = doc.createElementNS(SVGNS, "path");
                 path.setAttribute("d", d);
-                path.setAttribute("style", "fill:none;stroke:#ffffff;stroke-width:3;stroke-opacity:1");
+                path.setAttribute("style", "fill:none;stroke:#ffffff;stroke-width:" + OUTLINE_STROKE_PX + ";stroke-opacity:1");
                 shapesEl.appendChild(path);
             }
             const ptidx = this._labelPtidx(roi.labelVert);
             if (ptidx != null) {
                 const t = doc.createElementNS(SVGNS, "text");
                 t.setAttribute("data-ptidx", String(ptidx));
-                t.setAttribute("style", "font-family:Helvetica, sans-serif;font-size:14pt;font-weight:bold;" +
+                t.setAttribute("style", "font-family:Helvetica, sans-serif;font-size:" + LABEL_FONT_PT + "pt;font-weight:bold;" +
                     "font-style:italic;fill:white;fill-opacity:1;text-anchor:middle;filter:url(#dropshadow)");
                 t.appendChild(doc.createTextNode(roi.name)); // createTextNode => no injection
                 labelsEl.appendChild(t);
@@ -434,8 +452,8 @@ export class PycortexAdapter extends ViewerAdapter {
         try {
             labels = new this.svgoverlay.Labels(labelsEl, svgo.posdata, !!this._labelsHidden);
             labels.shader.uniforms.depth.value = svgo.depth;
-            const w = this.surface.width || this.viewportSize().width || 1024;
-            const h = this.surface.height || this.viewportSize().height || 768;
+            const w = this.surface.width || this.viewportSize().width || FALLBACK_TEX_W;
+            const h = this.surface.height || this.viewportSize().height || FALLBACK_TEX_H;
             labels.shader.uniforms.scale.value.set(1 / w, 1 / h);
             labels.setMix({ mix: this._currentMix(), thickmix: this._thickmix });
             svgo.labels.left.add(labels.meshes.left);

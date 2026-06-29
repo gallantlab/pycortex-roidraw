@@ -113,25 +113,29 @@ test("PROPERTY: a sampled bezier stays within the bbox of its control points (no
     }
 });
 
-test("PROPERTY: selection selects exactly the vertices inside the polygon", () => {
+test("PROPERTY: selection selects exactly the vertices inside an axis-aligned rectangle (independent oracle)", () => {
+    // The oracle is a direct point-in-rectangle test — NOT pointInPolygon (which selectInPolygon
+    // uses internally). So this grades selectInPolygon against independent geometry, not itself.
     const r = rng(4);
     for (let t = 0; t < TRIALS; t++) {
         const verts = cloud(r, 60);
-        const poly = convexRing(r, 3 + Math.floor(r() * 6));
-        const sel = selectInPolygon(verts, poly);
+        const x0 = r() * 0.5, y0 = r() * 0.5, x1 = x0 + 0.15 + r() * 0.3, y1 = y0 + 0.15 + r() * 0.3;
+        const rect = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];   // CCW rectangle as a polygon
+        const sel = selectInPolygon(verts, rect);
         const selected = new Set(sel.left);
-        // ground truth: brute-force point-in-polygon over every vertex
         for (let k = 0; k < verts.left.idx.length; k++) {
-            const inside = pointInPolygon(verts.left.px[k], poly);
-            assert.strictEqual(selected.has(verts.left.idx[k]), inside,
-                `trial ${t}: vertex ${k} membership disagrees with pointInPolygon`);
+            const [x, y] = verts.left.px[k];
+            const inside = x > x0 && x < x1 && y > y0 && y < y1;   // independent strict containment
+            const onEdge = Math.min(Math.abs(x - x0), Math.abs(x - x1), Math.abs(y - y0), Math.abs(y - y1)) < 1e-9;
+            if (!onEdge) assert.strictEqual(selected.has(verts.left.idx[k]), inside,
+                `trial ${t}: vertex ${k} at (${x},${y}) vs rect [${x0},${y0}]-[${x1},${y1}]`);
         }
         assert.strictEqual(sel.total, sel.left.length, `trial ${t}: total counts left+right`);
     }
 });
 
 test("PROPERTY: the boundary ring is a subset of the selection and traces it (realistic uv usage)", () => {
-    // Faithful to the controller's _roiFromBezier path: the lasso is a DENSELY sampled bezier and
+    // Faithful to draw-pipeline.js's roiFromBezier path: the lasso is a DENSELY sampled bezier and
     // buildOutline gets a uv-scale epsilon. (buildOutline's default epsilon is screen-pixel scale —
     // outline.js:10-12 — so a uv caller must pass its own, which the controller does.)
     const r = rng(5);
@@ -155,7 +159,7 @@ test("PROPERTY: the boundary ring is a subset of the selection and traces it (re
 });
 
 test("PROPERTY: membership derived from a curve is deterministic — what you see is what you get", () => {
-    // Mirrors the controller's _roiFromBezier pipeline with pure core functions: a curve is sampled
+    // Mirrors draw-pipeline.js's roiFromBezier with pure core functions: a curve is sampled
     // to a polygon, vertices are selected from it, and the boundary is re-derived. Re-running must be
     // bit-identical, and every selected/ring vertex must actually lie inside the sampled curve.
     const r = rng(6);

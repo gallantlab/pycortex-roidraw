@@ -10,7 +10,7 @@
 import { PycortexAdapter, surfaceReady, findSurface } from "./adapter/pycortex-adapter.js";
 import { ROISet } from "./core/roi-model.js";
 import { DrawModeMachine } from "./core/draw-mode.js";
-import { deriveRoiFromLasso, roiFromBezier, backfillBezier } from "./draw-pipeline.js";
+import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel } from "./draw-pipeline.js";
 import { LassoOverlay } from "./ui/lasso-overlay.js";
 import { BezierEditOverlay } from "./ui/bezier-edit-overlay.js";
 import { DrawPanel } from "./ui/draw-panel.js";
@@ -141,8 +141,10 @@ class ROIDrawer {
         const sel = deriveRoiFromLasso(this.adapter, pts);
         if (!sel.total) { this.panel.message("0 vertices selected — lasso the flatmap."); return; }
 
-        const name = window.prompt("ROI name:", "roi" + (this.rois.length + 1));
-        if (name === null) return;
+        const fallback = "roi" + (this.rois.length + 1);
+        const entered = window.prompt("ROI name:", fallback);
+        if (entered === null) return;                 // Cancel
+        const name = entered.trim() || fallback;      // OK on a blank/whitespace field => use the default
         this.rois.add({
             name, left: sel.left, right: sel.right,
             outline: sel.outline, labelVert: sel.labelVert, bezier: sel.bezier,
@@ -225,6 +227,11 @@ class ROIDrawer {
                 // imported shapes can be edited just like freshly drawn ones.
                 let fitted = 0;
                 for (const roi of added) {
+                    // back-fill a label vertex (same centroid-nearest rule as freshly drawn ROIs)
+                    if (!roi.labelVert && roi.outline) {
+                        const lv = backfillLabel(this.adapter, roi.outline);
+                        if (lv) roi.labelVert = lv;
+                    }
                     if (roi.bezier || !roi.outline) continue;
                     const bez = backfillBezier(this.adapter, roi.outline);
                     if (bez) { roi.bezier = bez; fitted++; }
@@ -236,6 +243,7 @@ class ROIDrawer {
                 this.panel.message("Import failed: " + (err && err.message ? err.message : err));
             }
         };
+        reader.onerror = () => this.panel.message("Import failed: could not read “" + file.name + "”.");
         reader.readAsText(file);
     }
 
@@ -254,9 +262,22 @@ class ROIDrawer {
             else if (e.key === "Shift") this.overlay.setPassthrough(true);
         };
         this._keyup = (e) => { if (e.key === "Shift") this.overlay.setPassthrough(false); };
+        this._blur = () => this.overlay.setPassthrough(false);   // dropping focus must release Shift-pan
+        // capture phase: intercept Shift/Esc before the host viewer's own keyboard handlers see them.
         window.addEventListener("keydown", this._keydown, true);
         window.addEventListener("keyup", this._keyup, true);
-        window.addEventListener("blur", () => this.overlay.setPassthrough(false));
+        window.addEventListener("blur", this._blur);             // stored so destroy() can remove it
+    }
+
+    // Tear down everything attach() wired up: the mix subscription, the window listeners, and every
+    // child UI component (each has its own destroy()). Lets a viewer detach/re-attach without leaking.
+    destroy() {
+        if (this._unsubMix) this._unsubMix();
+        window.removeEventListener("resize", this._onResize);
+        window.removeEventListener("keydown", this._keydown, true);
+        window.removeEventListener("keyup", this._keyup, true);
+        window.removeEventListener("blur", this._blur);
+        for (const c of [this.overlay, this.editOverlay, this.panel, this.toggle]) if (c && c.destroy) c.destroy();
     }
 
     // True only for text-entry targets (so we don't swallow Shift/Esc there). A file/button input
@@ -279,8 +300,10 @@ export function autoAttach(opts = {}) {
     const go = () => {
         const v = window.viewer;
         if (v && surfaceReady(v)) {
-            try { window.roidrawer = attach(v, opts); }
-            catch (e) { console.error("[roidraw] attach failed:", e); }
+            try {
+                if (window.roidrawer && window.roidrawer.destroy) window.roidrawer.destroy();  // don't leak a prior attach
+                window.roidrawer = attach(v, opts);
+            } catch (e) { console.error("[roidraw] attach failed:", e); }
             return;
         }
         if (tries-- > 0) setTimeout(go, 300);

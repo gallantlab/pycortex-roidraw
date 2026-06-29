@@ -12,27 +12,31 @@
  *   noteEditStart(isFlat)  -> { flatten }  re-flatten if an edit starts while inflated
  *   lassoActive(isFlat, editing) -> bool   capture is live only in Draw + flat + not editing
  */
+// The two modes. String values are part of the controller's public surface (index.js compares
+// this.mode to these), so the values must stay "display"/"draw" — the consts just name them.
+export const MODE = { DISPLAY: "display", DRAW: "draw" };
+
 export class DrawModeMachine {
     constructor() {
-        this.mode = "display";
+        this.mode = MODE.DISPLAY;
         this.sawFlat = false;
     }
 
     enterDraw() {
-        this.mode = "draw";
+        this.mode = MODE.DRAW;
         this.sawFlat = false;   // re-arm: the flatten glide's non-flat frames must not bounce us out
         return { flatten: true };
     }
 
     enterDisplay() {
-        this.mode = "display";
+        this.mode = MODE.DISPLAY;
         return {};
     }
 
     // A surface morph frame. In Draw: reaching flat arms the latch; a non-flat frame once the
     // latch is armed means the user inflated, so the caller should drop back to Display.
     noteMix(isFlat) {
-        if (this.mode === "draw") {
+        if (this.mode === MODE.DRAW) {
             if (isFlat) this.sawFlat = true;
             else if (this.sawFlat) return { exit: true };
         }
@@ -47,6 +51,6 @@ export class DrawModeMachine {
     }
 
     lassoActive(isFlat, editing) {
-        return this.mode === "draw" && isFlat && !editing;
+        return this.mode === MODE.DRAW && isFlat && !editing;
     }
 }

@@ -51,6 +51,29 @@ export function findSurface(viewer) {
     return null;
 }
 
+/*
+ * Inspect the host for every pycortex internal the adapter depends on. Returns { ok, missing:[…] }
+ * naming each absent capability, so attach() can fail LOUDLY and specifically when pycortex drifts
+ * (a renamed get_position, a restructured surface) instead of misbehaving silently. Pure — takes
+ * the host pieces explicitly so it is unit-testable without globals or a browser.
+ */
+export function preflightHost({ THREE, mriview, svgoverlay, viewer } = {}) {
+    const missing = [];
+    if (!THREE) missing.push("THREE (global three.js)");
+    if (!mriview) missing.push("mriview (global)");
+    else if (typeof mriview.get_position !== "function") missing.push("mriview.get_position() (vertex morph)");
+    const surface = findSurface(viewer);
+    if (!surface) missing.push("Surface (viewer.surfs[].surf with .pivots)");
+    else {
+        if (!surface.pivots) missing.push("surface.pivots (morph transform chain)");
+        const h = surface.hemis;
+        if (!h || !h.left || !h.left.attributes || !h.left.attributes.position)
+            missing.push("surface.hemis.left.attributes.position (vertex geometry)");
+    }
+    if (!svgoverlay) missing.push("svgoverlay (global, ROI overlay rendering)");
+    return { ok: missing.length === 0, missing };
+}
+
 // True once the surface's geometry + pivots are built (projection + arming work). The viewer
 // creates `viewer` and decodes the CTM asynchronously, so callers poll this before attaching.
 export function surfaceReady(viewer) {
@@ -65,12 +88,13 @@ export class PycortexAdapter extends ViewerAdapter {
         this.THREE = globalThis.THREE;
         this.mriview = globalThis.mriview;
         this.svgoverlay = globalThis.svgoverlay;
-        if (!this.THREE) throw new Error("[roidraw] THREE global not found");
-        if (!this.mriview || !this.mriview.get_position) throw new Error("[roidraw] mriview.get_position not found");
-
         this.viewer = viewer;
+
+        // Fail loudly + specifically if the host isn't the pycortex viewer we expect (see preflightHost).
+        const pf = preflightHost({ THREE: this.THREE, mriview: this.mriview, svgoverlay: this.svgoverlay, viewer });
+        if (!pf.ok) throw new Error("[roidraw] incompatible pycortex viewer — missing: " + pf.missing.join("; "));
+
         this.surface = findSurface(viewer);
-        if (!this.surface) throw new Error("[roidraw] could not locate Surface (viewer.surfs[].surf)");
         this.posdata = (this.surface.picker && this.surface.picker.posdata) || this._buildPosdata();
 
         this._layerName = layerName;

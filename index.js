@@ -9,9 +9,8 @@
  */
 import { PycortexAdapter, surfaceReady, findSurface } from "./adapter/pycortex-adapter.js";
 import { ROISet } from "./core/roi-model.js";
-import { selectInPolygon } from "./core/selection.js";
-import { buildOutline, pickLabelVertex } from "./core/outline.js";
-import { fitClosedBezier, evalClosedBezier } from "./core/bezier.js";
+import { DrawModeMachine } from "./core/draw-mode.js";
+import { deriveRoiFromLasso, roiFromBezier, backfillBezier } from "./draw-pipeline.js";
 import { LassoOverlay } from "./ui/lasso-overlay.js";
 import { BezierEditOverlay } from "./ui/bezier-edit-overlay.js";
 import { DrawPanel } from "./ui/draw-panel.js";
@@ -21,8 +20,6 @@ import css from "./ui/roidraw.css";
 const LAYER = "drawnrois";
 const FILL_TARGET = 0.70;  // brain fills ~70% of the viewport
 const FRAME_LERP = 0.30;   // per-frame damping of the zoom-to-fill during a morph
-const BEZIER_SAMPLES = 16; // samples/segment when rasterizing a bezier to a uv polygon for selection
-const OUTLINE_EPS_UV = 0.003; // RDP tolerance (uv units) for the fallback outline ring built in uv space
 
 function injectCss() {
     if (document.getElementById("roidraw-css")) return;
@@ -37,11 +34,10 @@ class ROIDrawer {
         injectCss();
         this.adapter = new PycortexAdapter(viewer, opts); // throws if the surface isn't ready
         this.rois = new ROISet();
-        this.mode = "display";
-        // Drawing is flat-only. Track whether the surface has actually reached flat since we last
-        // (re)flattened for Draw, so the transient non-flat mix events emitted *during* a flatten
-        // glide don't immediately bounce us back out of Draw. See _onMix / _flattenForDraw.
-        this._sawFlatInDraw = false;
+        // Drawing is flat-only. The DrawModeMachine owns the mode and the "reached flat since the
+        // last flatten-for-draw" latch, so the transient non-flat mix events emitted *during* a
+        // flatten glide don't bounce us back out of Draw. this.mode reads through to it.
+        this._dm = new DrawModeMachine();
 
         this.overlay = new LassoOverlay(this.adapter, {
             onLasso: (pts) => this._finishLasso(pts),
@@ -72,6 +68,9 @@ class ROIDrawer {
         this._frameOnLoad(0);                      // center + ~70% fill the default view (glide)
     }
 
+    // The mode ("display"|"draw") is owned by the state machine; read through to it.
+    get mode() { return this._dm.mode; }
+
     // --- view framing -----------------------------------------------------------------
 
     _frame() {
@@ -90,13 +89,10 @@ class ROIDrawer {
 
     _onMix() {
         // Drawing is flat-only: once we've reached flat in Draw, any move away from flat (the user
-        // inflating / dragging the unfold slider) drops us back to Display. The _sawFlatInDraw latch
+        // inflating / dragging the unfold slider) drops us back to Display. The machine's latch
         // ignores the transient non-flat mix events emitted while Draw's own flatten glide is still
         // in flight, so selecting Draw doesn't immediately bounce back out.
-        if (this.mode === "draw") {
-            if (this.adapter.isFlat()) this._sawFlatInDraw = true;
-            else if (this._sawFlatInDraw) { this.setMode("display"); return; }
-        }
+        if (this._dm.noteMix(this.adapter.isFlat()).exit) { this.setMode("display"); return; }
         this._updateDrawActive();   // lasso turns on once the flatten finishes
         if (this.editOverlay.isEditing()) this.editOverlay.reproject();  // keep knots on the surface
         this._frame();
@@ -105,21 +101,13 @@ class ROIDrawer {
 
     // --- modes ------------------------------------------------------------------------
 
-    // Flatten for Draw/Edit. Resets the "reached flat" latch first so the transient non-flat mix
-    // events the flatten glide emits don't trip the inflate-exits-Draw guard in _onMix before we
-    // actually arrive at flat.
-    _flattenForDraw() {
-        this._sawFlatInDraw = false;
-        this.adapter.flatten();
-    }
-
     setMode(mode) {
-        this.mode = mode;
         if (mode === "draw") {
+            if (this._dm.enterDraw().flatten) this.adapter.flatten();  // flat-only; lasso activates once flat
             this.adapter.setControlPanelVisible(false);
             this.panel.setVisible(true);
-            this._flattenForDraw();          // lasso activates once flat (see _updateDrawActive)
         } else {
+            this._dm.enterDisplay();
             this._editToggle(null);          // leaving Draw ends any in-progress edit
             this.panel.setVisible(false);
             this.adapter.setControlPanelVisible(true);
@@ -133,7 +121,7 @@ class ROIDrawer {
     // Lasso capture is on exactly when we're in Draw mode AND flat AND not editing a shape. Drawing
     // is flat-only; Draw mode flattens automatically, so capture switches on when the morph finishes.
     _updateDrawActive() {
-        this.overlay.setActive(this.mode === "draw" && this.adapter.isFlat() && !this.editOverlay.isEditing());
+        this.overlay.setActive(this._dm.lassoActive(this.adapter.isFlat(), this.editOverlay.isEditing()));
     }
 
     _renderStatus() {
@@ -146,52 +134,21 @@ class ROIDrawer {
     // --- drawing pipeline -------------------------------------------------------------
 
     _finishLasso(pts) {
-        // 1. select the lassoed vertices at the current view, 2. fit an editable bezier to the
-        // resulting ring (in flat-UV), 3. re-derive membership FROM the bezier so the stored
-        // vertices match the editable curve exactly. The bezier is the source of truth thereafter.
-        const projected = this.adapter.projectVertices({ subsample: 1 });
-        const sel0 = selectInPolygon(projected, pts);
-        if (!sel0.total) { this.panel.message("0 vertices selected — lasso the flatmap."); return; }
-
-        const lassoRing = buildOutline(pts, sel0);                       // px-space ring of the stroke
-        const ringUv = this._ringToUv(lassoRing);
-        const bezier = ringUv && ringUv.length >= 3 ? fitClosedBezier(ringUv) : null;
-        // membership from the bezier when we have one; otherwise keep the raw lasso selection
-        const derived = bezier ? this._roiFromBezier(bezier) : null;
-        const sel = (derived && derived.total) ? derived : {
-            left: sel0.left, right: sel0.right, outline: lassoRing,
-            labelVert: pickLabelVertex(sel0), total: sel0.total,
-        };
+        // Derive membership + an editable bezier from the lasso: select at the current view, fit a
+        // bezier to the ring (flat-UV), then re-derive membership FROM the bezier so the stored
+        // vertices match the editable curve (the bezier is the source of truth thereafter). Pure
+        // pipeline, testable headless — see draw-pipeline.js / test/draw-pipeline.test.js.
+        const sel = deriveRoiFromLasso(this.adapter, pts);
+        if (!sel.total) { this.panel.message("0 vertices selected — lasso the flatmap."); return; }
 
         const name = window.prompt("ROI name:", "roi" + (this.rois.length + 1));
         if (name === null) return;
         this.rois.add({
             name, left: sel.left, right: sel.right,
-            outline: sel.outline, labelVert: sel.labelVert, bezier,
+            outline: sel.outline, labelVert: sel.labelVert, bezier: sel.bezier,
         });
         this._sync();
-        this.panel.message('ROI "' + name + '": ' + sel.total + " vertices." + (bezier ? " ✎ editable." : ""));
-    }
-
-    // Map an outline ring [{h,g}] to flat-UV points [[u,v],...], dropping vertices with no uv.
-    _ringToUv(ring) {
-        if (!ring) return null;
-        const uv = [];
-        for (const o of ring) { const p = this.adapter.vertexUV(o); if (p) uv.push(p); }
-        return uv;
-    }
-
-    // Derive ROI membership + outline + label from a bezier, entirely in flat-UV (view-independent,
-    // so a reloaded ROI selects the same vertices). selectInPolygon/buildOutline are coordinate-space
-    // agnostic, so we feed them uv where they'd normally get screen px.
-    _roiFromBezier(bezier) {
-        const poly = evalClosedBezier(bezier, BEZIER_SAMPLES);
-        if (poly.length < 3) return null;
-        const all = this.adapter.allVertexUV();
-        const projectedUv = { left: { idx: all.left.idx, px: all.left.uv }, right: { idx: all.right.idx, px: all.right.uv } };
-        const sel = selectInPolygon(projectedUv, poly);
-        const outline = buildOutline(poly, sel, { epsilon: OUTLINE_EPS_UV });   // uv tolerance, not px
-        return { left: sel.left, right: sel.right, outline, labelVert: pickLabelVertex(sel), total: sel.total };
+        this.panel.message('ROI "' + name + '": ' + sel.total + " vertices." + (sel.bezier ? " ✎ editable." : ""));
     }
 
     // --- editing ----------------------------------------------------------------------
@@ -201,7 +158,7 @@ class ROIDrawer {
         const roi = id != null ? this.rois.rois.find((r) => r.id === id) : null;
         // Editing happens on the flatmap (the bezier knots live in the flat view). Starting an edit
         // re-flattens if the surface has been inflated, so the shape's anchors land on the surface.
-        if (roi && !this.adapter.isFlat()) this._flattenForDraw();
+        if (roi && this._dm.noteEditStart(this.adapter.isFlat()).flatten) this.adapter.flatten();
         this.editingId = roi ? roi.id : null;
         this.editOverlay.setEditing(roi || null);
         this.panel.setEditingId(this.editingId);
@@ -215,7 +172,7 @@ class ROIDrawer {
         const roi = this.rois.rois.find((r) => r.id === this.editingId);
         if (!roi) return;
         roi.bezier = bezier;
-        const d = this._roiFromBezier(bezier);
+        const d = roiFromBezier(this.adapter, bezier);
         if (d && d.total) { roi.left = d.left; roi.right = d.right; roi.outline = d.outline; roi.labelVert = d.labelVert; }
         this.adapter.setOverlayLayer(LAYER, this.rois.rois);   // re-rasterize the smooth outline
         this.panel.renderList(this.rois.rois);                 // refresh the vertex count
@@ -269,8 +226,7 @@ class ROIDrawer {
                 let fitted = 0;
                 for (const roi of added) {
                     if (roi.bezier || !roi.outline) continue;
-                    const ringUv = this._ringToUv(roi.outline);
-                    const bez = ringUv && ringUv.length >= 3 ? fitClosedBezier(ringUv) : null;
+                    const bez = backfillBezier(this.adapter, roi.outline);
                     if (bez) { roi.bezier = bez; fitted++; }
                 }
                 this._sync();

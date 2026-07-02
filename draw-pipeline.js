@@ -72,12 +72,17 @@ export function deriveRoiFromLasso(adapter, pts) {
 
     const lassoRing = buildOutline(pts, sel0);                       // px-space ring of the stroke
     const ringUv = ringToUv(adapter, lassoRing);
-    const bezier = ringUv && ringUv.length >= 3 ? fitClosedBezier(ringUv) : null;
-    // membership from the bezier when we have one; otherwise keep the raw lasso selection
-    const derived = bezier ? roiFromBezier(adapter, bezier) : null;
-    const sel = (derived && derived.total) ? derived : {
+    const fitted = ringUv && ringUv.length >= 3 ? fitClosedBezier(ringUv) : null;
+    // Prefer bezier-derived membership so the stored vertices match the editable curve. But only keep
+    // the bezier if it actually encloses something: a curve that re-derives to zero vertices (a very
+    // thin/tiny ROI the smoothing shrank past every vertex) would leave the bezier — the source of
+    // truth for the drawn outline and future edits — disagreeing with the fallback lasso vertices. In
+    // that case drop it, so the ROI stays a consistent (non-editable) vertex set.
+    const derived = fitted ? roiFromBezier(adapter, fitted) : null;
+    if (derived && derived.total)
+        return { left: derived.left, right: derived.right, outline: derived.outline, labelVert: derived.labelVert, bezier: fitted, total: derived.total };
+    return {
         left: sel0.left, right: sel0.right, outline: lassoRing,
-        labelVert: pickLabelVertex(sel0), total: sel0.total,
+        labelVert: pickLabelVertex(sel0), bezier: null, total: sel0.total,
     };
-    return { left: sel.left, right: sel.right, outline: sel.outline, labelVert: sel.labelVert, bezier, total: sel.total };
 }

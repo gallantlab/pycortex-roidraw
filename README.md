@@ -2,7 +2,8 @@
 
 In-browser **ROI drawing + export** for [pycortex](https://github.com/gallantlab/pycortex) WebGL
 viewers. Lasso a region on the flattened cortical surface; the stroke is fitted to a smooth,
-**editable bezier** that renders as a white outline + label **baked into the surface** (so it
+**editable bezier** that renders as a colored outline (its palette color, over a white halo for
+legibility) + label **baked into the surface** (so it
 occludes and morphs correctly), and exports to a portable JSON. The bezier is stored alongside the
 vertex set, so reloaded ROIs can be re-edited by dragging their control points.
 

@@ -2,6 +2,51 @@
 
 _Current status file. Most recent session at top._
 
+## 2026-07-02 — Full-project code review → 4 fixes (v0.3.4); release + demo re-bake PENDING (auth-blocked)
+
+User asked for a full code review (accuracy/bugs/edge cases/style/clarity/efficiency), then "do 1
+through 4", then to update the example viewer and "push it all", then "clean". Read the whole tree
+(core / adapter / ui / controller / Python tooling); **no correctness blockers** — the code is
+already well-audited. Surfaced 6 findings; the user took the top 4 and I implemented them test-first
+where headless-testable. Suite **93→94** JS tests (all green), Python suites green.
+
+**Fixes landed (commit `7d4e847`, pushed to `main`):**
+- **#1 Colored ROI outlines.** The palette `color` was stored/exported and shown as a panel swatch
+  but the baked outline was hard-coded white (`stroke:#ffffff`) — swatch meant nothing on the
+  surface. Adapter now strokes each ROI in its color over a **white halo** (new `OUTLINE_HALO_PX`),
+  kept legible on data + anatomy. Imported colors pass through a new hex-only `safeColor()` before
+  entering the SVG `style` attr (injection-safe). Updated `setOverlayLayer` JSDoc + README ("white
+  outline"→colored). NOTE: color is **machine-assigned** by creation order (`nextColor()` cycles an
+  8-entry PALETTE by `(nextId-1)%8`); there is **no color picker** — user only gets prompted for a
+  name. Possible follow-up the user flagged interest in: an `<input type=color>` in the panel row.
+- **#2 Bezier/vertex consistency.** `deriveRoiFromLasso` no longer attaches a fitted bezier when
+  re-derivation from it encloses 0 vertices (would leave the source-of-truth curve disagreeing with
+  the fallback lasso vertices). New headless test (`draw-pipeline.test.js`) forces the fallback via a
+  starved adapter + asserts the normal-case equality; fails against old code.
+- **#3 Display-mode framing.** `_onMix` now auto-frames only while `mode==="draw"` — unfolding in
+  Display no longer fights the user's zoom/pan every morph frame (Draw's flatten glide still frames).
+- **#4 `_worldOf` hardening.** Applies the `flatoff` y-offset to our own `this._v` instead of
+  mutating `get_position().pos` (may be a shared/cached vector in mriview).
+- Declined #5 (`ndcToPixel` dead in prod — only tests use it; adapter has its own `_ndc`) and #6
+  (mode-toggle lacks `aria-pressed`; `add_help.bound_keys` regex is broad) as low-value.
+
+**v0.3.4:** package.json bumped 0.3.3→0.3.4; bundle rebuilt = **94,844 B**, SHA-256
+`f3c070dce309f6aade95ac8cd5cabd6e3455a5597860eee4cbcbfd66024c9d53`, `node --check` clean. (Bundle is
+version-independent — build.mjs embeds no version.) The repo's own example `examples/make_viewer.py`
+needs NO edit — it copies the current `dist/` bundle at run time, so rebuilding already updates it.
+
+**OPEN / next time — release + demo re-bake NOT done (auth-blocked):**
+The auto-mode permission classifier **denied `gh release create`** ("push it all" authorized the code
+push but not publishing a release, since the release-first question went unanswered). The demo re-bake
+(clone + push to the public `viewer-stories-group-roidraw`) would hit the same wall, so I stopped.
+As of this "clean": **`/releases/latest` is still v0.3.3** and the **demo viewer is still on the
+v0.3.3 bundle** — both LAG the pushed `main` (v0.3.4 source). To finish, the user runs (via `!` or
+after adding a `gh`/`git` permission rule and telling me to retry):
+- `gh release create v0.3.4 dist/roidraw.bundle.js --repo gallantlab/pycortex-roidraw --title v0.3.4 --notes "..."`
+- clone `gallantlab/viewer-stories-group-roidraw`, `cp` the bundle (verify SHA == `f3c070…c9d53` for
+  byte-identical), commit + push its `main`. (Bundle sits next to `viewer.html` there.)
+Detect v0.3.4 via positive marker `safeColor` / `OUTLINE_HALO` in the bundle.
+
 ## 2026-06-29 (cont.) — Adversarial audit + fixes (Tiers 1–4) + documentation audit (80→93 tests)
 
 User asked for a full adversarial readability/best-practices audit ("be mean, be neurotic"), then

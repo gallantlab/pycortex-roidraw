@@ -95,7 +95,9 @@ class ROIDrawer {
         if (this._dm.noteMix(this.adapter.isFlat()).exit) { this.setMode("display"); return; }
         this._updateDrawActive();   // lasso turns on once the flatten finishes
         if (this.editOverlay.isEditing()) this.editOverlay.reproject();  // keep knots on the surface
-        this._frame();
+        // Auto-frame only while drawing (so Draw's flatten glide stays centered). In Display the user
+        // owns the camera; re-framing on every unfold-slider morph there would fight their zoom/pan.
+        if (this.mode === "draw") this._frame();
         this._renderStatus();
     }
 

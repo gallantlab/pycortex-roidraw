@@ -101,6 +101,24 @@ test("backfillLabel: returns null for an empty/uv-less ring", () => {
     assert.strictEqual(backfillLabel(adapter(), []), null);
 });
 
+test("deriveRoiFromLasso: a returned bezier always matches the stored vertices; else it is dropped", () => {
+    // Force the fallback branch deterministically: a surface where the lasso projection still selects
+    // vertices (projectVertices non-empty) but the uv-space membership is empty (allVertexUV empty), so
+    // roiFromBezier re-derives to zero. The pipeline must NOT keep a bezier that encloses nothing.
+    const base = adapter();
+    const starved = Object.create(base);
+    starved.allVertexUV = () => ({ left: { idx: [], uv: [] }, right: { idx: [], uv: [] } });
+    const roi = deriveRoiFromLasso(starved, lassoUvRect(base, 0.25, 0.25, 0.75, 0.75));
+    assert.ok(roi.total > 0, "the lasso still selects vertices (fallback path)");
+    assert.strictEqual(roi.bezier, null, "a bezier that encloses nothing must not be attached");
+
+    // and in the normal case the attached bezier's re-derived membership equals the stored vertices
+    const ok = deriveRoiFromLasso(adapter(), lassoUvRect(base, 0.25, 0.25, 0.75, 0.75));
+    assert.ok(ok.bezier, "normal case keeps the editable bezier");
+    assert.deepStrictEqual(new Set(roiFromBezier(adapter(), ok.bezier).left), new Set(ok.left),
+        "stored vertices equal the bezier's own membership (no disagreement)");
+});
+
 test("round-trip: a drawn lasso's bezier re-derives a non-empty membership inside the lassoed region", () => {
     const a = adapter();
     const pts = lassoUvRect(a, 0.3, 0.3, 0.7, 0.7);

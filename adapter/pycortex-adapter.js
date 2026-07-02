@@ -34,8 +34,17 @@ const COLLAPSE_WINDOW_MS = 8000;  // ...and on setData within this startup windo
 const DEFAULT_THICKMIX = 0.5;     // thick-surface blend fed to get_position (constant; we don't expose it)
 const FALLBACK_TEX_W = 1024;      // overlay viewBox width fallback when the surface reports no size
 const FALLBACK_TEX_H = 768;       // overlay viewBox height fallback
-const OUTLINE_STROKE_PX = 3;      // ROI white-outline stroke width, in overlay viewBox px
+const OUTLINE_STROKE_PX = 3;      // ROI colored-outline stroke width, in overlay viewBox px
+const OUTLINE_HALO_PX = 2;        // extra width of the white halo drawn under the colored stroke
+const OUTLINE_FALLBACK_COLOR = "#ffffff"; // stroke when an ROI has no (valid) color
 const LABEL_FONT_PT = 14;         // ROI label font size, in pt
+
+// A CSS hex color (#rgb / #rrggbb / #rrggbbaa) or the fallback. ROI colors are our own palette, but an
+// imported file could carry anything, and the value goes into an SVG style attribute — restrict it to
+// a hex literal so it can't smuggle in extra style declarations.
+function safeColor(c) {
+    return (typeof c === "string" && /^#[0-9a-fA-F]{3,8}$/.test(c)) ? c : OUTLINE_FALLBACK_COLOR;
+}
 
 // Vertex count of a THREE BufferAttribute (pycortex's old three.js lacks `.count`).
 function attrCount(attr) {
@@ -174,10 +183,13 @@ export class PycortexAdapter extends ViewerAdapter {
 
     // World position of geometry-local vertex `i` at the current mix (incl. the flatoff offset
     // so it lands on the *rendered* mesh, not floating above it). Mutates+returns this._v.
+    // Applies the flatoff offset to our OWN vector (never to get_position's returned `pos`, which
+    // may be a shared/cached vector inside mriview — mutating it would corrupt host state).
     _worldOf(pd, mw, i, surfmix, foy) {
         const gp = this.mriview.get_position(pd, surfmix, this._thickmix, i).pos;
-        gp.y -= foy;
-        return this._v.copy(gp).applyMatrix4(mw);
+        this._v.copy(gp);
+        this._v.y -= foy;
+        return this._v.applyMatrix4(mw);
     }
 
     projectVertices({ subsample = 1 } = {}) {
@@ -430,9 +442,16 @@ export class PycortexAdapter extends ViewerAdapter {
         for (const roi of rois) {
             const d = this._roiSvgPath(roi, W, H);
             if (d) {
+                // White halo under a colored stroke: the halo keeps the outline legible on any
+                // background (colored data or white anatomy), while the color carries the ROI
+                // identity the panel swatch shows. Same path `d`, drawn wider + white underneath.
+                const halo = doc.createElementNS(SVGNS, "path");
+                halo.setAttribute("d", d);
+                halo.setAttribute("style", "fill:none;stroke:#ffffff;stroke-width:" + (OUTLINE_STROKE_PX + OUTLINE_HALO_PX) + ";stroke-opacity:0.9");
+                shapesEl.appendChild(halo);
                 const path = doc.createElementNS(SVGNS, "path");
                 path.setAttribute("d", d);
-                path.setAttribute("style", "fill:none;stroke:#ffffff;stroke-width:" + OUTLINE_STROKE_PX + ";stroke-opacity:1");
+                path.setAttribute("style", "fill:none;stroke:" + safeColor(roi.color) + ";stroke-width:" + OUTLINE_STROKE_PX + ";stroke-opacity:1");
                 shapesEl.appendChild(path);
             }
             const ptidx = this._labelPtidx(roi.labelVert);

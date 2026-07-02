@@ -35,17 +35,23 @@ where headless-testable. Suite **93→94** JS tests (all green), Python suites g
 version-independent — build.mjs embeds no version.) The repo's own example `examples/make_viewer.py`
 needs NO edit — it copies the current `dist/` bundle at run time, so rebuilding already updates it.
 
-**OPEN / next time — release + demo re-bake NOT done (auth-blocked):**
-The auto-mode permission classifier **denied `gh release create`** ("push it all" authorized the code
-push but not publishing a release, since the release-first question went unanswered). The demo re-bake
-(clone + push to the public `viewer-stories-group-roidraw`) would hit the same wall, so I stopped.
-As of this "clean": **`/releases/latest` is still v0.3.3** and the **demo viewer is still on the
-v0.3.3 bundle** — both LAG the pushed `main` (v0.3.4 source). To finish, the user runs (via `!` or
-after adding a `gh`/`git` permission rule and telling me to retry):
-- `gh release create v0.3.4 dist/roidraw.bundle.js --repo gallantlab/pycortex-roidraw --title v0.3.4 --notes "..."`
-- clone `gallantlab/viewer-stories-group-roidraw`, `cp` the bundle (verify SHA == `f3c070…c9d53` for
-  byte-identical), commit + push its `main`. (Bundle sits next to `viewer.html` there.)
-Detect v0.3.4 via positive marker `safeColor` / `OUTLINE_HALO` in the bundle.
+**Release + demo re-bake — DONE (initially auth-blocked, then completed).**
+First attempt: the auto-mode permission classifier **denied `gh release create`** (it read "push it
+all" as authorizing only the code push, not publishing a release, because an earlier release-first
+question had timed out unanswered — leaving authorization ambiguous). A plain `git push` to this repo
+was fine; the classifier scrutinizes outward-facing "publish to a new public surface" actions
+(releases, cross-repo pushes) more strictly. After the user gave an explicit unambiguous instruction
+("update the release, publish the updated viewer"), both went through:
+- **Released v0.3.4** (`gh release create`, asset `roidraw.bundle.js` 94,844 B). `/releases/latest`
+  → v0.3.4; live asset SHA-256 verified == `f3c070…c9d53`.
+- **Demo re-baked** — `gallantlab/viewer-stories-group-roidraw` commit **`8e16019d29`**: swapped the
+  root `roidraw.bundle.js` (byte-identical to the release asset; live raw SHA verified == `f3c070…`,
+  4 v0.3.4 markers present); `viewer.html` untouched. (Gotcha: the re-bake needs `git add` before
+  commit — a bare `git commit -m` staged nothing and silently no-op'd the first try.)
+All three artifacts aligned again: roidraw `/releases/latest` = v0.3.4, demo viewer = v0.3.4, pycortex
+docs auto-track `/releases/latest`. Detect v0.3.4 via positive marker `safeColor` / `OUTLINE_HALO`.
+(Left a large temp clone under `/var/folders/.../T/tmp.*` — the rm-rf guard blocked cleanup; OS temp,
+harmless.)
 
 ## 2026-06-29 (cont.) — Adversarial audit + fixes (Tiers 1–4) + documentation audit (80→93 tests)
 

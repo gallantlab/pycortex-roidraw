@@ -1444,13 +1444,23 @@ Update the file header comment to document the new emission:
 - [ ] **Step 2: Add `setTool` and route the mouseup**
 
 ```js
-    /* Which gesture a plain drag performs: a closed ROI lasso, or an open sulcus trace. */
+    /* Which gesture a plain drag performs: a closed ROI lasso, or an open sulcus trace.
+     * Normalize BEFORE comparing: a caller passing undefined/null (an unchecked radio, a
+     * <select>.onchange) must not cancel an in-flight stroke that belongs to the tool already
+     * selected. */
     setTool(tool) {
-        if (tool === this.tool) return;
-        this.tool = tool === "trace" ? "trace" : "lasso";
+        const t = tool === "trace" ? "trace" : "lasso";
+        if (t === this.tool) return;
+        this.tool = t;
         this._cancel();            // an in-flight stroke belongs to the old tool
     }
 ```
+
+Also guard the trace emission against a degenerate stroke. `curveFromTrace` rejects only
+`pts.length < 2`, and `dedupe` compares for exact equality — so two points 1px apart survive and
+mint a near-zero-length 2-anchor sulcus from an accidental click. Require the stroke's
+bounding-box diagonal to exceed the existing `DRAG_THRESHOLD` (4px, already used to tell a
+Shift-click from a Shift-drag). The lasso path keeps its plain `>= 3` condition, unchanged.
 
 Replace the tail of `_onUp`:
 

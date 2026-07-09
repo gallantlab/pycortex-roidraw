@@ -4,6 +4,7 @@ import {
     fitClosedBezier, bezierFromAnchors, evalClosedBezier, catmullRomHandles,
     cloneBezier, moveAnchor, moveHandle, setAnchorSmooth, splitSegment, deleteAnchor,
     nearestOnClosedBezier,
+    fitOpenBezier, evalOpenBezier, evalBezier, isClosed, segCount,
 } from "../core/bezier.js";
 
 const sq = [[0, 0], [1, 0], [1, 1], [0, 1]]; // unit square ring
@@ -196,6 +197,85 @@ test("nearestOnClosedBezier: finds a point on the curve near a query", () => {
     const hit = nearestOnClosedBezier(bez, [0.5, -0.2], 24);   // near the bottom edge (anchor0->anchor1)
     assert.ok(hit && hit.dist < 0.3);
     assert.ok(hit.seg >= 0 && hit.seg < 4 && hit.t >= 0 && hit.t <= 1);
+});
+
+const line = [[0, 0], [1, 0], [2, 0]];
+
+test("fitOpenBezier: pins both endpoints and stays open", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    assert.strictEqual(bez.closed, false);
+    assert.strictEqual(isClosed(bez), false);
+    assert.strictEqual(bez.anchors.length, 3);
+    assert.ok(ptNear(bez.anchors[0], [0, 0]));
+    assert.ok(ptNear(bez.anchors[2], [2, 0]));
+});
+
+test("fitOpenBezier: two points are enough (a straight segment)", () => {
+    const bez = fitOpenBezier([[0, 0], [3, 0]]);
+    assert.strictEqual(bez.anchors.length, 2);
+    assert.strictEqual(segCount(bez), 1);
+    // endpoint handles lie 1/3 along the segment; the unused ones sit on their anchor
+    assert.ok(ptNear(bez.outHandles[0], [1, 0]));
+    assert.ok(ptNear(bez.inHandles[1], [2, 0]));
+    assert.ok(ptNear(bez.inHandles[0], [0, 0]));
+    assert.ok(ptNear(bez.outHandles[1], [3, 0]));
+});
+
+test("fitOpenBezier: endpoints are corners, interior anchors are smooth", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    assert.deepStrictEqual(bez.smooth, [false, true, false]);
+});
+
+test("fitOpenBezier: collinear-with-tremor simplifies but keeps the ends", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 0.0005], [2, 0]], { epsilon: 0.01 });
+    assert.strictEqual(bez.anchors.length, 2);
+    assert.ok(ptNear(bez.anchors[0], [0, 0]));
+    assert.ok(ptNear(bez.anchors[1], [2, 0]));
+});
+
+test("fitOpenBezier: rejects fewer than 2 distinct points", () => {
+    assert.strictEqual(fitOpenBezier([[1, 1]]), null);
+    assert.strictEqual(fitOpenBezier([[1, 1], [1, 1], [1, 1]]), null);
+    assert.strictEqual(fitOpenBezier([]), null);
+    assert.strictEqual(fitOpenBezier(null), null);
+});
+
+test("segCount: open has n-1 segments, closed has n", () => {
+    assert.strictEqual(segCount(fitOpenBezier(line)), 1);   // RDP collapses to 2 anchors
+    assert.strictEqual(segCount(fitClosedBezier(sq)), 4);
+});
+
+test("evalOpenBezier: starts at the first anchor and ends at the last", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    const poly = evalOpenBezier(bez, 8);
+    assert.ok(ptNear(poly[0], bez.anchors[0]));
+    assert.ok(ptNear(poly[poly.length - 1], bez.anchors[bez.anchors.length - 1]));
+    // 2 segments * 8 samples + the final anchor
+    assert.strictEqual(poly.length, 2 * 8 + 1);
+});
+
+test("evalOpenBezier: a straight fit stays on the line", () => {
+    const poly = evalOpenBezier(fitOpenBezier([[0, 0], [3, 0]]), 6);
+    for (const p of poly) assert.ok(near(p[1], 0));
+});
+
+test("evalOpenBezier: too few anchors yields nothing", () => {
+    assert.deepStrictEqual(evalOpenBezier({ closed: false, anchors: [[0, 0]] }, 4), []);
+});
+
+test("evalBezier: dispatches on the closed flag", () => {
+    const open = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    const closed = fitClosedBezier(sq);
+    assert.deepStrictEqual(evalBezier(open, 8), evalOpenBezier(open, 8));
+    assert.deepStrictEqual(evalBezier(closed, 8), evalClosedBezier(closed, 8));
+});
+
+test("catmullRomHandles: closed still wraps (regression)", () => {
+    const { inHandles, outHandles } = catmullRomHandles(sq);
+    // anchor 0's tangent uses anchor 3 as prev (the wrap)
+    const t = [(sq[1][0] - sq[3][0]) / 6, (sq[1][1] - sq[3][1]) / 6];
+    assert.ok(ptNear(outHandles[0], [sq[0][0] + t[0], sq[0][1] + t[1]]));
+    assert.ok(ptNear(inHandles[0], [sq[0][0] - t[0], sq[0][1] - t[1]]));
 });
 
 function sub(a, b) { return [a[0] - b[0], a[1] - b[1]]; }

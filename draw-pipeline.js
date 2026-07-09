@@ -158,9 +158,10 @@ export function curveFromTrace(adapter, pts) {
     const Hinv = invertHomography(H);
     if (!Hinv) return null;
 
-    const uvPts = [];
-    for (const p of pts) { const uv = applyHomography(Hinv, p); if (uv) uvPts.push(uv); }
-    const bezier = fitOpenBezier(uvPts);
+    // applyHomography always returns a point — it clamps a near-zero projective divisor rather than
+    // failing — so there is nothing to filter here. fitOpenBezier dedupes and rejects a stroke that
+    // collapses to fewer than 2 distinct points.
+    const bezier = fitOpenBezier(pts.map((p) => applyHomography(Hinv, p)));
     if (!bezier) return null;
 
     return { bezier, labelVert: labelForCurve(adapter, bezier) };

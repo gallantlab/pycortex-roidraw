@@ -238,41 +238,39 @@ export function moveHandle(bez, i, which, pos) {
     return b;
 }
 
-/* Set anchor i smooth or corner. Turning it smooth re-derives both handles symmetric about the
- * anchor: aligned to the local tangent (neighbor direction), with the current average handle length
- * preserved so the curve keeps its tightness. Turning it to a corner leaves the handles as-is
- * (they simply become independently draggable). */
+/* Set anchor i smooth or corner. An OPEN curve's endpoints have no prev/next pair to build a
+ * symmetric tangent from, so they are permanently corners: forcing them smooth is a no-op. */
 export function setAnchorSmooth(bez, i, smooth) {
     const b = cloneBezier(bez);
-    b.smooth[i] = !!smooth;
-    if (!smooth) return b;
     const n = b.anchors.length;
+    const endpoint = !isClosed(b) && (i === 0 || i === n - 1);
+    b.smooth[i] = endpoint ? false : !!smooth;
+    if (endpoint || !smooth) return b;
     const a = b.anchors[i], prev = b.anchors[(i - 1 + n) % n], next = b.anchors[(i + 1) % n];
     let dir = sub(next, prev);
     let dl = len(dir);
-    if (dl < 1e-9) { dir = sub(b.outHandles[i], a); dl = len(dir); }   // fall back to current out dir
+    if (dl < 1e-9) { dir = sub(b.outHandles[i], a); dl = len(dir); }
     if (dl < 1e-9) { dir = [1, 0]; dl = 1; }
     dir = [dir[0] / dl, dir[1] / dl];
     let r = (len(sub(b.outHandles[i], a)) + len(sub(b.inHandles[i], a))) / 2;
-    if (r < 1e-9) r = dl / 6;                                          // both handles collapsed
+    if (r < 1e-9) r = dl / 6;
     b.outHandles[i] = [a[0] + dir[0] * r, a[1] + dir[1] * r];
     b.inHandles[i] = [a[0] - dir[0] * r, a[1] - dir[1] * r];
     return b;
 }
 
-/* Insert an anchor on segment `seg` (anchor seg -> anchor seg+1) at parameter t in (0,1), splitting
- * the cubic with de Casteljau so the curve shape is UNCHANGED. The new anchor is smooth (the split
- * point is naturally C1). Returns a new bezier with one more anchor. */
+/* Insert an anchor on segment `seg` at parameter t in (0,1), splitting the cubic with de Casteljau
+ * so the curve shape is UNCHANGED. For an open curve `seg` must be in [0, n-2]. */
 export function splitSegment(bez, seg, t) {
     const b = cloneBezier(bez);
     const n = b.anchors.length;
-    const j = (seg + 1) % n;
+    const j = isClosed(b) ? (seg + 1) % n : seg + 1;
     const p0 = b.anchors[seg], p1 = b.outHandles[seg], p2 = b.inHandles[j], p3 = b.anchors[j];
     const ab = lerp(p0, p1, t), bc = lerp(p1, p2, t), cd = lerp(p2, p3, t);
     const abc = lerp(ab, bc, t), bcd = lerp(bc, cd, t);
-    const mid = lerp(abc, bcd, t);                       // the new on-curve anchor
-    b.outHandles[seg] = ab;                              // left sub-cubic: p0, ab, abc, mid
-    b.inHandles[j] = cd;                                 // right sub-cubic: mid, bcd, cd, p3
+    const mid = lerp(abc, bcd, t);
+    b.outHandles[seg] = ab;
+    b.inHandles[j] = cd;
     b.anchors.splice(seg + 1, 0, mid);
     b.inHandles.splice(seg + 1, 0, abc);
     b.outHandles.splice(seg + 1, 0, bcd);
@@ -280,10 +278,11 @@ export function splitSegment(bez, seg, t) {
     return b;
 }
 
-/* Remove anchor i. Refuses (returns the input unchanged) below 3 anchors — a closed bezier needs 3.
- * Neighboring handles are left as they were, so the curve reconnects prev -> next through them. */
+/* Remove anchor i. A closed bezier needs 3 anchors; an open one needs only 2. Returns the input
+ * unchanged at the floor. Neighboring handles are left as-is, so the curve reconnects through them. */
 export function deleteAnchor(bez, i) {
-    if (bez.anchors.length <= 3) return bez;
+    const floor = isClosed(bez) ? 3 : 2;
+    if (bez.anchors.length <= floor) return bez;
     const b = cloneBezier(bez);
     b.anchors.splice(i, 1);
     b.inHandles.splice(i, 1);
@@ -309,4 +308,28 @@ export function nearestOnClosedBezier(bez, pt, samplesPerSeg = 24) {
         }
     }
     return best ? { seg: best.seg, t: best.t, point: best.point, dist: Math.sqrt(best.d2) } : null;
+}
+
+/* Nearest point on an OPEN bezier to `pt`, by sampling each of its n-1 segments. There is no
+ * wrap segment, so a point "inside the elbow" of an L-shaped curve is correctly reported far. */
+export function nearestOnOpenBezier(bez, pt, samplesPerSeg = 24) {
+    if (!bez || !bez.anchors || bez.anchors.length < 2) return null;
+    const { anchors, inHandles, outHandles } = bez;
+    const n = anchors.length, steps = Math.max(2, samplesPerSeg | 0);
+    let best = null;
+    for (let i = 0; i < n - 1; i++) {
+        const [p0, c1, c2, p3] = segControls(anchors, inHandles, outHandles, i, false);
+        for (let s = 0; s <= steps; s++) {
+            const t = s / steps, q = cubicAt(p0, c1, c2, p3, t);
+            const dx = q[0] - pt[0], dy = q[1] - pt[1], d = dx * dx + dy * dy;
+            if (!best || d < best.d2) best = { seg: i, t, point: q, d2: d };
+        }
+    }
+    return best ? { seg: best.seg, t: best.t, point: best.point, dist: Math.sqrt(best.d2) } : null;
+}
+
+/* Nearest point on any bezier, dispatching on its `closed` flag. */
+export function nearestOnBezier(bez, pt, samplesPerSeg = 24) {
+    return isClosed(bez) ? nearestOnClosedBezier(bez, pt, samplesPerSeg)
+                         : nearestOnOpenBezier(bez, pt, samplesPerSeg);
 }

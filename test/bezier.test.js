@@ -3,7 +3,7 @@ import assert from "node:assert";
 import {
     fitClosedBezier, bezierFromAnchors, evalClosedBezier, catmullRomHandles,
     cloneBezier, moveAnchor, moveHandle, setAnchorSmooth, splitSegment, deleteAnchor,
-    nearestOnClosedBezier,
+    nearestOnClosedBezier, nearestOnOpenBezier, nearestOnBezier,
     fitOpenBezier, evalOpenBezier, evalBezier, isClosed, segCount,
 } from "../core/bezier.js";
 
@@ -279,3 +279,87 @@ test("catmullRomHandles: closed still wraps (regression)", () => {
 });
 
 function sub(a, b) { return [a[0] - b[0], a[1] - b[1]]; }
+
+test("cloneBezier: round-trips an open curve", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    const c = cloneBezier(bez);
+    assert.strictEqual(c.closed, false);
+    assert.deepStrictEqual(c.anchors, bez.anchors);
+    assert.deepStrictEqual(c.smooth, [false, true, false]);
+    c.anchors[0][0] = 99;
+    assert.strictEqual(bez.anchors[0][0], 0);            // deep copy
+});
+
+test("deleteAnchor: open floor is 2, closed floor is 3", () => {
+    const open3 = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    const open2 = deleteAnchor(open3, 1);
+    assert.strictEqual(open2.anchors.length, 2);
+    assert.strictEqual(deleteAnchor(open2, 0).anchors.length, 2);   // refuses below 2
+
+    const tri = fitClosedBezier([[0, 0], [1, 0], [0, 1]]);
+    assert.strictEqual(deleteAnchor(tri, 0).anchors.length, 3);     // refuses below 3
+});
+
+test("deleteAnchor: removing an open endpoint re-derives nothing (handles kept)", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0], [3, 1]]);
+    const d = deleteAnchor(bez, 0);
+    assert.strictEqual(d.anchors.length, 3);
+    assert.ok(ptNear(d.anchors[0], [1, 1]));
+    assert.strictEqual(d.smooth.length, 3);
+});
+
+test("setAnchorSmooth: an open curve's endpoints stay corners", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    assert.strictEqual(setAnchorSmooth(bez, 0, true).smooth[0], false);
+    assert.strictEqual(setAnchorSmooth(bez, 2, true).smooth[2], false);
+});
+
+test("setAnchorSmooth: an open curve's interior anchor still toggles", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    assert.strictEqual(setAnchorSmooth(bez, 1, false).smooth[1], false);
+    const s = setAnchorSmooth(setAnchorSmooth(bez, 1, false), 1, true);
+    assert.strictEqual(s.smooth[1], true);
+    // re-derived symmetric about the anchor
+    const a = s.anchors[1];
+    assert.ok(ptNear([2 * a[0] - s.outHandles[1][0], 2 * a[1] - s.outHandles[1][1]], s.inHandles[1], 1e-9));
+});
+
+test("splitSegment: inserts on an open segment without changing the curve", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    const before = evalOpenBezier(bez, 16);
+    const split = splitSegment(bez, 0, 0.5);
+    assert.strictEqual(split.anchors.length, 4);
+    assert.strictEqual(split.closed, false);
+    const after = evalOpenBezier(split, 16);
+    assert.ok(ptNear(after[0], before[0], 1e-9));
+    assert.ok(ptNear(after[after.length - 1], before[before.length - 1], 1e-9));
+});
+
+test("moveAnchor: preserves the open flag", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    assert.strictEqual(moveAnchor(bez, 1, [1, 5]).closed, false);
+});
+
+test("nearestOnOpenBezier: finds a point on a straight open curve", () => {
+    const bez = fitOpenBezier([[0, 0], [4, 0]]);
+    const hit = nearestOnOpenBezier(bez, [2, 1], 32);
+    assert.strictEqual(hit.seg, 0);
+    assert.ok(near(hit.point[1], 0, 1e-6));
+    assert.ok(near(hit.dist, 1, 1e-3));
+});
+
+test("nearestOnOpenBezier: never reports the phantom closing segment", () => {
+    // an L: the closing segment (end -> start) would pass near [0.2,0.2]; an open curve has none
+    const bez = fitOpenBezier([[0, 2], [0, 0], [2, 0]]);
+    const hit = nearestOnOpenBezier(bez, [1.6, 1.6], 32);
+    assert.ok(hit.dist > 1.0, "expected far from the open curve, got " + hit.dist);
+});
+
+test("nearestOnOpenBezier: needs 2 anchors", () => {
+    assert.strictEqual(nearestOnOpenBezier({ closed: false, anchors: [[0, 0]] }, [0, 0]), null);
+});
+
+test("nearestOnBezier: dispatches on the closed flag", () => {
+    const bez = fitOpenBezier([[0, 0], [4, 0]]);
+    assert.deepStrictEqual(nearestOnBezier(bez, [2, 1], 32), nearestOnOpenBezier(bez, [2, 1], 32));
+});

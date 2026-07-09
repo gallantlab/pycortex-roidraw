@@ -12,8 +12,8 @@ test("escapeXml: escapes the five XML entities", () => {
     assert.strictEqual(escapeXml(`a&b<c>d"e'f`), "a&amp;b&lt;c&gt;d&quot;e&apos;f");
 });
 
-test("SULCI_PATH_STYLE matches pycortex defaults.cfg [sulci_paths]", () => {
-    assert.strictEqual(SULCI_PATH_STYLE, "fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6");
+test("SULCI_PATH_STYLE is the visually-meaningful subset of pycortex defaults.cfg [sulci_paths]", () => {
+    assert.strictEqual(SULCI_PATH_STYLE, "fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round");
 });
 
 test("exportSulciSvg: emits a sulci layer with shapes and labels groups", () => {

@@ -1,7 +1,8 @@
 /*
  * lasso-overlay.js — a transparent 2D canvas over the surface that captures the lasso while
  * drawing. Host-agnostic: it only needs the adapter to locate the surface canvas. It emits:
- *   onLasso(points)   — a completed lasso (>= 3 points), in canvas-relative px.
+ *   onLasso(points)   — a completed CLOSED lasso (>= 3 points), in canvas-relative px.
+ *   onTrace(points)   — a completed OPEN stroke (>= 2 points), in canvas-relative px (a sulcus).
  *   onInspect(x, y)   — a Shift-click (not drag), so the host can pick the voxel underneath.
  * Committed ROIs are NOT drawn here (the adapter renders them into the surface); this only
  * shows the in-progress lasso, and drawing happens at full-flat so it never needs reprojection.
@@ -11,13 +12,15 @@ const LASSO_STROKE = "#ffcc00"; // in-progress lasso outline color
 const LASSO_WIDTH = 1.5;
 
 export class LassoOverlay {
-    constructor(adapter, { onLasso, onInspect } = {}) {
+    constructor(adapter, { onLasso, onInspect, onTrace } = {}) {
         this.adapter = adapter;
         this.onLasso = onLasso || (() => {});
+        this.onTrace = onTrace || (() => {});
         this.onInspect = onInspect || (() => {});
         this.active = false;
         this.passthrough = false;   // Shift held -> drag pans the surface, click inspects a voxel
         this.drawing = false;
+        this.tool = "lasso";        // "lasso" (closed ROI) | "trace" (open sulcus)
         this.lasso = [];
         this._gesture = "none";     // "lasso" | "shift" — fixed at mousedown
         this._downPt = null;
@@ -71,6 +74,13 @@ export class LassoOverlay {
         if (!this.active || this._gesture !== "none" || on === this.passthrough) return;
         this.passthrough = on;
         this._applyMode();
+    }
+
+    /* Which gesture a plain drag performs: a closed ROI lasso, or an open sulcus trace. */
+    setTool(tool) {
+        if (tool === this.tool) return;
+        this.tool = tool === "trace" ? "trace" : "lasso";
+        this._cancel();            // an in-flight stroke belongs to the old tool
     }
 
     _applyMode() {
@@ -133,6 +143,8 @@ export class LassoOverlay {
         const pts = this.lasso;
         this.lasso = [];
         this._redraw();
+        // A trace needs only 2 points (a line); a closed lasso needs 3 to bound an area.
+        if (this.tool === "trace") { if (pts.length >= 2) this.onTrace(pts); return; }
         if (pts.length >= 3) this.onLasso(pts);
     }
 
@@ -156,6 +168,8 @@ export class LassoOverlay {
         if (!ctx) return;
         ctx.clearRect(0, 0, this.el.width, this.el.height);
         if (this.lasso.length > 1) {
+            // Drawn as an open polyline for BOTH tools: a lasso's closure is implied by the
+            // point-in-polygon test, not by the preview stroke.
             ctx.strokeStyle = LASSO_STROKE;
             ctx.lineWidth = LASSO_WIDTH;
             ctx.beginPath();

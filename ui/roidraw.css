@@ -37,16 +37,19 @@
 .roidraw-status--inspect { color: #6cf; }
 
 .roidraw-tools { display: flex; gap: 0; margin: 6px 0 8px; }
-.roidraw-tools__btn {
+/* `.roidraw-panel button` is (0,1,1); a bare `.roidraw-tools__btn` is (0,1,0) and loses to it, so
+ * the width/margin resets below must be scoped under .roidraw-panel to actually take effect. */
+.roidraw-panel .roidraw-tools__btn {
     flex: 1;
     width: auto;                   /* override .roidraw-panel button { width: 100% } */
     margin: 0;                     /* override .roidraw-panel button { margin-bottom: 6px } */
     padding: 5px 8px; font: inherit; cursor: pointer;
     background: #2a2a2a; color: #ddd; border: 1px solid #444;
 }
-.roidraw-tools__btn:first-child { border-radius: 3px 0 0 3px; }
-.roidraw-tools__btn:last-child { border-radius: 0 3px 3px 0; border-left: none; }
-.roidraw-tools__btn--on { background: #ffcc00; color: #111; border-color: #ffcc00; }
+/* All scoped under .roidraw-panel too: a bare selector here would lose to the base rule above. */
+.roidraw-panel .roidraw-tools__btn:first-child { border-radius: 3px 0 0 3px; }
+.roidraw-panel .roidraw-tools__btn:last-child { border-radius: 0 3px 3px 0; border-left: none; }
+.roidraw-panel .roidraw-tools__btn--on { background: #ffcc00; color: #111; border-color: #ffcc00; }
 
 .roidraw-list { margin-bottom: 6px; }
 .roidraw-list__empty { color: #777; }

@@ -2,6 +2,94 @@
 
 _Current status file. Most recent session at top._
 
+## 2026-07-09 — Adversarial code review: the v0.4.0 sulcus export was broken. Fixed.
+
+User asked for a full, mean code review of the whole tree, then to fix everything found. Read all
+~3,000 lines of source, then went to `pycortex-src` and read `cortex/svgoverlay.py` — which nobody
+had done during the v0.4.0 build. **The shipped `sulci.svg` could not be read by pycortex at all.**
+
+### The three blockers (all verified against the real parser, all now fixed)
+
+1. **Not well-formed XML.** The exported fragment used the `inkscape:` prefix with no namespace
+   declaration and no `<svg>` root. `ET.parse` → `ParseError: unbound prefix`. Nothing — ElementTree,
+   lxml, a browser, Inkscape — could open the file. `escapeXml` was fastidiously escaping five
+   entities inside a document no parser would accept.
+2. **The `<text data-ptidx>` labels crashed `db.get_overlay()`.** `Labels.__init__` (svgoverlay.py
+   ~line 413) does an unguarded `float(text.get('x'))` over **every** `<text>` in a labels layer.
+   Ours had no x/y — a vertex index cannot supply one. `TypeError`, before anything rendered.
+3. **`data-ptidx` is pycortex's OUTPUT, not its input.** `SVGOverlay.set_coords` computes it by
+   kd-tree from each label's x/y and overwrites whatever is there. `grep -c '<text' S1/overlays.svg`
+   → **0**: pycortex stores no labels at all; `Shape.get_labelpos()` derives one per path (so a
+   two-hemisphere sulcus is labelled twice for free). The whole `labelForCurve` → `nearestVertexTo`
+   → `ptidxFor` → `<text>` chain computed a value pycortex ignores and emitted it in a form that
+   made pycortex crash.
+
+Plus a data-loss footgun: README said "paste or merge into overlays.svg". `SVGOverlay` keys layers by
+`inkscape:label`, so appending a second `sulci` layer **silently replaces the subject's own** in
+`self.layers`. You must copy the shape groups into the existing `#sulci_shapes`.
+
+**And `test/svg-export.test.js` never parsed its own output.** Ten tests, all regex-matching the
+string the author meant to write. That is exactly why all three bugs shipped. One
+`ET.fromstring` would have caught #1 on day one.
+
+### Other findings from the same read
+
+- Two more facts the old comments got wrong: `[sulci_paths]` is read **only** by
+  `quickflat/composite.py` at render time — `Shape.__init__` seeds style from `[overlay_paths]` and
+  `Shape.set()` overwrites every path. So the on-disk `style` matters only to Inkscape. (The v0.4.0
+  header claimed `Overlay.set()` re-applies `[sulci_paths]` at load.)
+- **The stale-index guard covered 2 of 5 edit ops.** `setAnchorSmooth`/`splitSegment` threw
+  `TypeError`; `deleteAnchor` silently no-op'd; `setAnchorSmooth(closed, i=9)` grew `smooth[]` to
+  length 10 against 4 anchors, with holes — the *exact* desync `inRange` was written to kill.
+- `loadJSON`'s "arrays are defensively copied so the model never aliases the caller's parsed JSON"
+  was **false**: `r.bezier` aliased wholesale, `outline.slice()` shared every `{h,g}`.
+- `setOverlayLayer` returns `false` while the SVG overlay loads; nobody checked → a shape listed in
+  the panel, counted, and never drawn, with no retry.
+- `_editToggle` accepted a bezier-less shape: `editingId` set, overlay not editing → panel shows
+  "✓ Done editing" while the lasso stays armed. Unreachable only because the panel disables the
+  button (a UI accident load-bearing for a controller invariant).
+- `_frameOnLoad` (60 × 100 ms), `_download` (4 s), and the adapter's `setData` listener all outlived
+  `destroy()` — and `autoAttach` destroys-then-attaches.
+- `"… " + text.length + " bytes"` counts UTF-16 code units.
+- Doc rot: `bezier-edit-overlay.js` "EDITING an ROI's bezier" + `this.roi`; `draw-panel.js` "the ROI
+  control panel"; `transform.js` "Used ONLY by the bezier edit overlay" (curveFromTrace uses it).
+- `isClosed(null) === true`; lasso had no degenerate-stroke guard while trace did; `fitHomography`
+  checked `spans2D(src)` but not `dst`.
+
+### The fix (18 files, +717/−290; suite 152 → 161 JS tests, all Python green)
+
+- **`core/svg-export.js` rewritten.** Standalone `<svg>` root with both namespaces + the overlay's
+  `width`/`height`/`viewBox`. **No labels** — but the `labels` layer is still emitted, empty, because
+  `_find_layer(layer, "labels")` raises `ValueError` without it. An XML comment in the file itself
+  carries the merge instructions. `SULCI_STROKE_WIDTH`/`_OPACITY` exported and imported by the
+  adapter, so the live stroke and the exported stroke can't drift (they were `6` in two places).
+- **`test/test_sulci_svg.py` (new, wired into `npm run test:py`).** Generates the writer's real output
+  with node, parses it with ElementTree using svgoverlay.py's own namespaces and `findall` queries.
+  Needs no `cortex`, no subject. Runs in CI.
+- All five bezier edit ops share one contract: out-of-range → unchanged copy, never throws. Swept by
+  test across every op × bad index × curve kind.
+- `loadJSON` deep-copies (bezier, outline entries, labelVert). `isClosed(null) → false`.
+- `exportSulciMarkup` returns `null` (overlay not loaded) vs `""` (no curve yielded a path); the
+  controller reports each correctly. `_sync` polls on `setOverlayLayer` failure. `_editToggle`
+  requires a bezier. Timers tracked + cancelled; adapter grew a `destroy()`.
+- `byteLength` via `TextEncoder`. Status strings extracted. Lasso rejects degenerate strokes.
+  `fitHomography` checks `dst` too. `roi` → `shape` throughout the edit overlay.
+- **Every new test was mutation-checked**: reverted each fix, confirmed the test fails.
+
+### Open / next time
+
+- **Unchanged and still the top gap:** `svgoverlay.py` itself has never run on roidraw's output.
+  Needs a subject + importable `cortex`. The Python test reproduces the parser's *queries*, which is
+  as close as CI can get here.
+- The browser `_import` (`FileReader`) and `_download` (`Blob`/anchor/`revokeObjectURL`) paths still
+  have zero coverage; the 4 s teardown exists for Firefox and is untested.
+- **The 2026-07-09 CDP live-viewer check predates this rewrite** — it validated the old broken
+  markup. Re-run it before the next release.
+- **A new release is needed**: `dist/` is gitignored, so `/releases/latest` still serves the v0.4.0
+  bundle with the broken exporter. Cut v0.4.1, then re-bake the demo viewer (see
+  [[roidraw-release-artifact-ordering]]). pycortex docs PR #656 is still OPEN.
+- Lesson recorded in memory as `string-tests-cannot-check-a-format`.
+
 ## 2026-07-08/09 — Sulcus drawing (v0.4.0): spec → plan → 12 TDD tasks → SHIPPED (release + demo + docs PR)
 
 User asked to add sulcus + gyrus drawing. Brainstormed; **researched how pycortex actually stores

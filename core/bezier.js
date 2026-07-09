@@ -18,13 +18,37 @@ import { simplifyRDP, centroid } from "./geom.js";
 // PIXEL_RDP_EPSILON in *pixel* units (~1000× this); the two live in different coordinate spaces.
 const UV_RDP_EPSILON = 0.004;
 
-/* Catmull-Rom -> cubic-bezier tangent handles for a CLOSED ring of anchors. Returns
- * { inHandles, outHandles } parallel to `anchors`; out[i]/in[i] are mirrored about anchor i. */
-export function catmullRomHandles(anchors) {
+/* True unless explicitly opened. A bezier from an older file has no `closed` key. */
+export function isClosed(bez) { return !bez || bez.closed !== false; }
+
+/* Number of cubic segments: a closed ring wraps (n), an open curve does not (n-1). */
+export function segCount(bez) {
+    const n = (bez && bez.anchors) ? bez.anchors.length : 0;
+    return isClosed(bez) ? n : Math.max(0, n - 1);
+}
+
+/* Catmull-Rom -> cubic-bezier tangent handles. Returns { inHandles, outHandles } parallel to
+ * `anchors`. For a CLOSED ring every anchor's handles are mirrored about it, using the wrapped
+ * neighbours. For an OPEN curve the endpoints have no neighbour on one side: they get a one-sided
+ * tangent (a third of the terminal segment), and their unused handle sits on the anchor itself. */
+export function catmullRomHandles(anchors, closed = true) {
     const n = anchors.length;
     const inHandles = new Array(n), outHandles = new Array(n);
     for (let i = 0; i < n; i++) {
-        const prev = anchors[(i - 1 + n) % n], next = anchors[(i + 1) % n], a = anchors[i];
+        const a = anchors[i];
+        if (!closed && n >= 2 && i === 0) {
+            const b = anchors[1];
+            outHandles[0] = [a[0] + (b[0] - a[0]) / 3, a[1] + (b[1] - a[1]) / 3];
+            inHandles[0] = [a[0], a[1]];                       // unused
+            continue;
+        }
+        if (!closed && n >= 2 && i === n - 1) {
+            const b = anchors[n - 2];
+            inHandles[i] = [a[0] + (b[0] - a[0]) / 3, a[1] + (b[1] - a[1]) / 3];
+            outHandles[i] = [a[0], a[1]];                      // unused
+            continue;
+        }
+        const prev = anchors[(i - 1 + n) % n], next = anchors[(i + 1) % n];
         const tx = (next[0] - prev[0]) / 6, ty = (next[1] - prev[1]) / 6;
         outHandles[i] = [a[0] + tx, a[1] + ty];
         inHandles[i] = [a[0] - tx, a[1] - ty];
@@ -32,11 +56,13 @@ export function catmullRomHandles(anchors) {
     return { inHandles, outHandles };
 }
 
-/* Build a bezier descriptor from anchors alone (handles auto-derived, every anchor smooth). */
-export function bezierFromAnchors(anchors) {
+/* Build a bezier descriptor from anchors alone (handles auto-derived). Every anchor of a closed
+ * ring is smooth; an open curve's ENDPOINTS are corners (no symmetric tangent exists there). */
+export function bezierFromAnchors(anchors, closed = true) {
     const a = anchors.map((p) => [p[0], p[1]]);
-    const { inHandles, outHandles } = catmullRomHandles(a);
-    return { closed: true, anchors: a, inHandles, outHandles, smooth: a.map(() => true) };
+    const { inHandles, outHandles } = catmullRomHandles(a, closed);
+    const smooth = a.map((_, i) => closed || (i !== 0 && i !== a.length - 1));
+    return { closed, anchors: a, inHandles, outHandles, smooth };
 }
 
 /*
@@ -82,16 +108,44 @@ export function fitClosedBezier(ring, { epsilon = UV_RDP_EPSILON } = {}) {
     return bezierFromAnchors(anchors);
 }
 
+/* Drop consecutive duplicate points (a slow drag emits repeats at the same pixel). */
+function dedupe(pts) {
+    const out = [];
+    for (const p of pts) {
+        const q = out[out.length - 1];
+        if (!q || q[0] !== p[0] || q[1] !== p[1]) out.push([p[0], p[1]]);
+    }
+    return out;
+}
+
+/*
+ * Fit an editable OPEN bezier to a traced polyline (e.g. a sulcus stroke mapped to uv).
+ * polyline : [[u,v], ...] (>= 2 distinct points). epsilon: RDP tolerance in uv units.
+ *
+ * No rotateToExtreme here: that exists only because RDP pins its endpoints while a closed ring's
+ * seam is arbitrary. On an open polyline pinning the endpoints is exactly what we want — the
+ * traced start and end of the sulcus are real, meaningful points.
+ */
+export function fitOpenBezier(polyline, { epsilon = UV_RDP_EPSILON } = {}) {
+    if (!polyline || polyline.length < 2) return null;
+    const pts = dedupe(polyline);
+    if (pts.length < 2) return null;
+    let anchors = simplifyRDP(pts, epsilon);
+    if (anchors.length < 2) anchors = pts;          // RDP can't drop an endpoint, but be defensive
+    return bezierFromAnchors(anchors, false);
+}
+
 function cubicAt(p0, c1, c2, p3, t) {
     const mt = 1 - t, a = mt * mt * mt, b = 3 * mt * mt * t, c = 3 * mt * t * t, d = t * t * t;
     return [a * p0[0] + b * c1[0] + c * c2[0] + d * p3[0],
             a * p0[1] + b * c1[1] + c * c2[1] + d * p3[1]];
 }
 
-// The four control points of closed-bezier segment i (anchor i → anchor i+1):
-// [start anchor, its out-handle, the next anchor's in-handle, the next anchor].
-function segControls(anchors, inHandles, outHandles, i) {
-    const j = (i + 1) % anchors.length;
+// The four control points of segment i (anchor i -> anchor i+1):
+// [start anchor, its out-handle, the next anchor's in-handle, the next anchor]. A closed ring
+// wraps from the last anchor back to the first; an open curve has no such segment.
+function segControls(anchors, inHandles, outHandles, i, closed = true) {
+    const j = closed ? (i + 1) % anchors.length : i + 1;
     return [anchors[i], outHandles[i], inHandles[j], anchors[j]];
 }
 
@@ -106,10 +160,33 @@ export function evalClosedBezier(bez, samplesPerSeg = 12) {
     const n = anchors.length, out = [];
     const steps = Math.max(1, samplesPerSeg | 0);
     for (let i = 0; i < n; i++) {
-        const [p0, c1, c2, p3] = segControls(anchors, inHandles, outHandles, i);
+        const [p0, c1, c2, p3] = segControls(anchors, inHandles, outHandles, i, true);
         for (let s = 0; s < steps; s++) out.push(cubicAt(p0, c1, c2, p3, s / steps));
     }
     return out;
+}
+
+/*
+ * Sample an OPEN bezier to a polyline. samplesPerSeg points per segment (the segment's start
+ * anchor, then interior samples), plus the final anchor — which, unlike a closed ring, is not the
+ * next segment's start. Returns [x,y] points; [] if there aren't 2 anchors.
+ */
+export function evalOpenBezier(bez, samplesPerSeg = 12) {
+    if (!bez || !bez.anchors || bez.anchors.length < 2) return [];
+    const { anchors, inHandles, outHandles } = bez;
+    const n = anchors.length, out = [];
+    const steps = Math.max(1, samplesPerSeg | 0);
+    for (let i = 0; i < n - 1; i++) {
+        const [p0, c1, c2, p3] = segControls(anchors, inHandles, outHandles, i, false);
+        for (let s = 0; s < steps; s++) out.push(cubicAt(p0, c1, c2, p3, s / steps));
+    }
+    out.push([anchors[n - 1][0], anchors[n - 1][1]]);
+    return out;
+}
+
+/* Sample any bezier, dispatching on its `closed` flag. */
+export function evalBezier(bez, samplesPerSeg = 12) {
+    return isClosed(bez) ? evalClosedBezier(bez, samplesPerSeg) : evalOpenBezier(bez, samplesPerSeg);
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -224,7 +301,7 @@ export function nearestOnClosedBezier(bez, pt, samplesPerSeg = 24) {
     const n = anchors.length, steps = Math.max(2, samplesPerSeg | 0);
     let best = null;
     for (let i = 0; i < n; i++) {
-        const [p0, c1, c2, p3] = segControls(anchors, inHandles, outHandles, i);
+        const [p0, c1, c2, p3] = segControls(anchors, inHandles, outHandles, i, true);
         for (let s = 0; s <= steps; s++) {
             const t = s / steps, q = cubicAt(p0, c1, c2, p3, t);
             const dx = q[0] - pt[0], dy = q[1] - pt[1], d = dx * dx + dy * dy;

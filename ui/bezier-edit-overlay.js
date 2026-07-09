@@ -284,6 +284,16 @@ export class BezierEditOverlay {
 
     _hitTestAnchorOnly(pt) { return nearestWithin(this._anchorPx, pt, HIT_RADIUS); }
 
+    /* Drop any in-flight drag. Call whenever the anchor list changes underneath one, so a stale
+     * `_drag.i` can't be written through on the next mousemove. */
+    _cancelDrag() {
+        if (!this._drag) return;
+        this._drag = null;
+        this._dragMoved = false;
+        this._downPt = null;
+        this.el.style.cursor = "default";
+    }
+
     _onKeyDown(e) {
         if (!this.roi || this._sel < 0) return;
         if (e.key !== "Delete" && e.key !== "Backspace") return;
@@ -293,6 +303,10 @@ export class BezierEditOverlay {
         const before = this.bez.anchors.length;
         this.bez = deleteAnchor(this.bez, this._sel);
         if (this.bez.anchors.length === before) return;        // refused (floor: 3 closed, 2 open)
+        // A drag in flight targets an anchor index that this splice just invalidated: the index is
+        // either past the end now, or it silently refers to a DIFFERENT anchor. Cancel the drag —
+        // the thing being dragged no longer exists.
+        this._cancelDrag();
         this._sel = -1; this._recurve(); this._commit(); this.reproject();
     }
 

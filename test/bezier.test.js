@@ -396,3 +396,49 @@ test("nearestOnBezier: dispatches on the closed flag", () => {
     const bez = fitOpenBezier([[0, 0], [4, 0]]);
     assert.deepStrictEqual(nearestOnBezier(bez, [2, 1], 32), nearestOnOpenBezier(bez, [2, 1], 32));
 });
+
+/* ---------------------------------------------------------------------------------------------
+ * Out-of-range guards. The edit overlay holds a drag target `{i, which}` across events; if the
+ * anchor list shrinks under it (Delete pressed mid-drag), a stale `i` used to write past the end
+ * of the handle arrays, silently desynchronizing their lengths from `anchors`.
+ * ------------------------------------------------------------------------------------------- */
+
+test("moveAnchor: an out-of-range index is a no-op, not array corruption", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    for (const i of [3, 99, -1]) {
+        const r = moveAnchor(bez, i, [9, 9]);
+        assert.strictEqual(r.anchors.length, 3, "anchors grew at i=" + i);
+        assert.strictEqual(r.inHandles.length, 3, "inHandles grew at i=" + i);
+        assert.strictEqual(r.outHandles.length, 3, "outHandles grew at i=" + i);
+        assert.deepStrictEqual(r.anchors, bez.anchors, "geometry changed at i=" + i);
+    }
+});
+
+test("moveHandle: an out-of-range index is a no-op, not array corruption", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    for (const i of [3, 99, -1]) {
+        for (const which of ["in", "out"]) {
+            const r = moveHandle(bez, i, which, [9, 9]);
+            assert.strictEqual(r.anchors.length, 3);
+            assert.strictEqual(r.inHandles.length, 3, "inHandles grew at i=" + i + "/" + which);
+            assert.strictEqual(r.outHandles.length, 3, "outHandles grew at i=" + i + "/" + which);
+            assert.deepStrictEqual(r.inHandles, bez.inHandles);
+            assert.deepStrictEqual(r.outHandles, bez.outHandles);
+        }
+    }
+});
+
+test("moveAnchor/moveHandle: handle arrays stay parallel to anchors after a delete", () => {
+    // the exact sequence the overlay produced: grab the last anchor's handle, then Delete it
+    const bez = deleteAnchor(fitOpenBezier([[0, 0], [1, 1], [2, 0], [3, 1]]), 3);
+    const r = moveHandle(bez, 3, "in", [9, 9]);            // stale drag index
+    assert.strictEqual(r.inHandles.length, r.anchors.length);
+    assert.strictEqual(r.outHandles.length, r.anchors.length);
+    assert.strictEqual(r.smooth.length, r.anchors.length);
+});
+
+test("moveAnchor/moveHandle: an in-range index still works (guard isn't over-broad)", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    assert.deepStrictEqual(moveAnchor(bez, 1, [5, 5]).anchors[1], [5, 5]);
+    assert.deepStrictEqual(moveHandle(bez, 1, "out", [5, 5]).outHandles[1], [5, 5]);
+});

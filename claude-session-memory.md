@@ -84,13 +84,36 @@ most important open item); every interactive gesture (the CDP run drove state, n
 - Gotcha confirmed again: the demo re-bake needs `git add` before commit; a bare `git commit -m`
   silently stages nothing.
 
+**Late correction (user caught it): the ROI side has never been fed back either.** I had documented
+the `sulci.svg` → `svgoverlay.py` round-trip as *the* open gap. Wrong — there are two, and they
+differ in kind. Fixed in TESTING.md + the manual checklist (commit `91225b7`, pushed):
+- **`sulci.svg` names foreign consumers** (`svgoverlay.py`, `quickflat`, Inkscape) that have never
+  once been asked to parse it. That's the claim the whole feature rests on.
+- **`rois.json` has NO foreign consumer.** `vertexset-v2` is roidraw-native; `grep vertexset cortex/`
+  → nothing, deliberately (`get_roi_masks` does not read it). "Read it back" can only mean
+  re-importing into roidraw.
+- The **format** round-trip IS strong: `test/properties.test.js` runs
+  `toJSON → JSON.stringify → JSON.parse → loadJSON` over 300 seeded trials. Don't redo it.
+- The **plumbing** around it is untested in both directions: nothing touches `FileReader` or
+  `_import` (empty-file guard, `reader.onerror`, `backfillBezier`/`backfillLabel` for v1 files,
+  `_sync`), and neither **download** path (`Blob` → anchor → `revokeObjectURL`) has ever run — incl.
+  the 4000 ms deferred teardown that exists only because Firefox otherwise writes a 0-byte file.
+- Lesson: a property test proving a *format* round-trips is not coverage of the *plumbing* around it.
+  I had been treating the two as the same thing.
+
 **Open / next time:**
 - **PR #656 is unmerged.** The repo has no required checks, so `gh pr merge` lands immediately.
-- The **`svgoverlay.py` round-trip is still unverified** — nothing has ever fed roidraw's exported
-  `sulci.svg` to pycortex's own parser. Highest-value next check; needs a subject.
-- Interactive gestures (trace drag, endpoint handles, label-follows-reshape) verified only by eye.
+- **Highest-value check:** merge an exported `sulci.svg` into a real subject's `overlays.svg`,
+  confirm `db.get_overlay()` parses it and `quickflat.make_figure(..., with_sulci=True)` renders it.
+  Needs a subject + an importable `cortex` (**not importable in this env** — that's why it's open).
+- Next after that: export → Clear all → **Import** an ROI in a live viewer (and a v1 file, to
+  exercise the bezier back-fill). Check the download in **Firefox** specifically.
+- Interactive gestures (trace drag, endpoint handles, label-follows-reshape) verified only by eye —
+  the CDP run drove controller *state*, never a synthesized mouse drag.
 - Detect v0.4.0 in a built bundle via markers `fitOpenBezier` / `exportSulciSvg` / `ShapeSet`.
 - Docs artifacts live under `docs/superpowers/` (spec, plan, manual checklist).
+- `huth2012-prep/` is untracked and **not mine** (dated 2026-07-02, has its own `RESUME.md`).
+  Left alone.
 
 ## 2026-07-02 — Full-project code review → 4 fixes (v0.3.4); release + demo re-bake PENDING (auth-blocked)
 

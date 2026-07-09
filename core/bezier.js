@@ -214,10 +214,18 @@ export function cloneBezier(bez) {
     };
 }
 
+/* Is `i` a live anchor index? The edit overlay carries a drag target across pointer events, so an
+ * anchor list that shrinks under it (Delete pressed mid-drag) leaves a stale index behind. Writing
+ * through one used to append past the end of the handle arrays, silently desynchronizing their
+ * lengths from `anchors`. The move ops below refuse instead. */
+const inRange = (bez, i) => Number.isInteger(i) && i >= 0 && i < bez.anchors.length;
+
 /* Move anchor i to `pos`, carrying its two handles by the same delta (the local shape is rigid —
- * standard vector-editor behavior, so a smooth anchor stays smooth when you slide it). */
+ * standard vector-editor behavior, so a smooth anchor stays smooth when you slide it).
+ * An out-of-range i returns the bezier unchanged. */
 export function moveAnchor(bez, i, pos) {
     const b = cloneBezier(bez);
+    if (!inRange(b, i)) return b;
     const d = sub(pos, b.anchors[i]);
     b.anchors[i] = [pos[0], pos[1]];
     b.outHandles[i] = add(b.outHandles[i], d);
@@ -227,9 +235,10 @@ export function moveAnchor(bez, i, pos) {
 
 /* Move one tangent handle of anchor i. which = "out" | "in". If the anchor is smooth, the opposite
  * handle is mirrored about the anchor (kept collinear + equal length) so the curve stays smooth;
- * a corner anchor moves the handle independently. */
+ * a corner anchor moves the handle independently. An out-of-range i returns the bezier unchanged. */
 export function moveHandle(bez, i, which, pos) {
     const b = cloneBezier(bez);
+    if (!inRange(b, i)) return b;
     const a = b.anchors[i];
     const here = which === "in" ? b.inHandles : b.outHandles;
     const other = which === "in" ? b.outHandles : b.inHandles;

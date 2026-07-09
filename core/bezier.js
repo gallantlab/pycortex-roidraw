@@ -278,8 +278,24 @@ export function splitSegment(bez, seg, t) {
     return b;
 }
 
+/* An open curve's endpoints (index 0 and n-1) are always corners with their unused handle
+ * collapsed onto the anchor (see the module header). Deleting an anchor can promote a former
+ * INTERIOR anchor to an endpoint, carrying over a stale `smooth: true` and a live, off-anchor
+ * handle on the side that just became unused — re-pin both endpoints to restore the invariant.
+ * The still-live handle on the other side (the one-sided tangent into the curve) is untouched. */
+function normalizeOpenEndpoints(b) {
+    const n = b.anchors.length;
+    b.smooth[0] = false;
+    b.inHandles[0] = [b.anchors[0][0], b.anchors[0][1]];
+    b.smooth[n - 1] = false;
+    b.outHandles[n - 1] = [b.anchors[n - 1][0], b.anchors[n - 1][1]];
+    return b;
+}
+
 /* Remove anchor i. A closed bezier needs 3 anchors; an open one needs only 2. Returns the input
- * unchanged at the floor. Neighboring handles are left as-is, so the curve reconnects through them. */
+ * unchanged at the floor. Neighboring handles are left as-is, so the curve reconnects through them.
+ * On an open curve, removing anchor 0 or n-1 can promote a former interior anchor to an endpoint;
+ * normalizeOpenEndpoints re-pins both endpoints so the corner/degenerate-handle invariant holds. */
 export function deleteAnchor(bez, i) {
     const floor = isClosed(bez) ? 3 : 2;
     if (bez.anchors.length <= floor) return bez;
@@ -288,7 +304,7 @@ export function deleteAnchor(bez, i) {
     b.inHandles.splice(i, 1);
     b.outHandles.splice(i, 1);
     b.smooth.splice(i, 1);
-    return b;
+    return isClosed(b) ? b : normalizeOpenEndpoints(b);
 }
 
 /* Nearest point on the closed bezier to `pt`, by sampling each segment. Returns

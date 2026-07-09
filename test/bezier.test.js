@@ -192,6 +192,39 @@ test("deleteAnchor: removes an anchor but refuses to drop below 3", () => {
     assert.strictEqual(deleteAnchor(tri, 0).anchors.length, 3, "a triangle is the floor");
 });
 
+test("deleteAnchor: removing an open curve's first anchor promotes a corner endpoint (smooth=false, unused handle on anchor)", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0], [3, 1]]);
+    const d = deleteAnchor(bez, 0);
+    assert.strictEqual(d.smooth[0], false, "promoted endpoint must be a corner");
+    assert.ok(ptNear(d.inHandles[0], d.anchors[0]), "unused in-handle must sit on the new endpoint anchor");
+});
+
+test("deleteAnchor: removing an open curve's last anchor promotes a corner endpoint (smooth=false, unused handle on anchor)", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0], [3, 1]]);
+    const d = deleteAnchor(bez, bez.anchors.length - 1);
+    const last = d.anchors.length - 1;
+    assert.strictEqual(d.smooth[last], false, "promoted endpoint must be a corner");
+    assert.ok(ptNear(d.outHandles[last], d.anchors[last]), "unused out-handle must sit on the new endpoint anchor");
+});
+
+test("deleteAnchor: removing an interior anchor of an open curve leaves both endpoints untouched", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0], [3, 1]]);
+    const d = deleteAnchor(bez, 1); // interior anchor, endpoints (0 and n-1) must be unaffected
+    assert.strictEqual(d.smooth[0], false);
+    assert.ok(ptNear(d.inHandles[0], d.anchors[0]));
+    assert.ok(ptNear(d.outHandles[0], bez.outHandles[0]), "endpoint 0's live handle unchanged");
+    const last = d.anchors.length - 1;
+    assert.strictEqual(d.smooth[last], false);
+    assert.ok(ptNear(d.outHandles[last], d.anchors[last]));
+    assert.ok(ptNear(d.inHandles[last], bez.inHandles[bez.anchors.length - 1]), "endpoint n-1's live handle unchanged");
+});
+
+test("deleteAnchor: closed bezier anchors are unaffected by the open-endpoint normalization", () => {
+    const bez = fitClosedBezier([[0, 0], [1, 0], [1, 1], [0, 1], [0.5, -0.3]]);
+    const d = deleteAnchor(bez, 2);
+    assert.ok(d.smooth.every((s) => s === true), "closed bezier anchors remain smooth after deletion");
+});
+
 test("nearestOnClosedBezier: finds a point on the curve near a query", () => {
     const bez = bezierFromAnchors(sq);
     const hit = nearestOnClosedBezier(bez, [0.5, -0.2], 24);   // near the bottom edge (anchor0->anchor1)

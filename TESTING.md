@@ -82,15 +82,29 @@ shape — run in CI against a pinned viewer fixture. That needs a checked-in vie
 in CI, so it's deliberately *not* wired into `npm test` yet; it's the recommended next step for true
 end-to-end coverage.
 
-Sulcus drawing adds three more honest gaps of the same kind:
+Sulcus drawing adds gaps of the same kind. Some were closed by a one-off browser check against the
+live `viewer-stories-group-roidraw` viewer, driven over the Chrome DevTools Protocol (2026-07-09).
+That check is **not in CI** — it needs a baked static viewer, which this repo does not carry.
 
-- The exported `sulci.svg` fragment is asserted structurally (open paths, merged groups, XML
-  escaping) but has never been round-tripped through pycortex's `svgoverlay.py` parser in CI.
-  Loading it into a real subject's `overlays.svg` is a manual check.
+Closed by that check, against a real pycortex viewer:
+
+- `adapter/pycortex-adapter.js`'s open-curve rendering. With three sulci and one ROI in the model,
+  `setOverlayLayer` produced 8 `<path>` elements (halo + stroke per shape): the 6 sulcal ones carry
+  no trailing `Z`, the 2 ROI ones do.
+- `exportSulciMarkup` on the live overlay: 3 paths, none closing; two same-named `CS` curves merged
+  into one `<g inkscape:label="CS">` with a `<path>` each; a hostile name XML-escaped in both the
+  attribute and the text node; style exactly
+  `fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round`.
+- No sulcus leaks into the `vertexset-v2` JSON, and its `format` string is unchanged.
+
+Still open:
+
+- The exported `sulci.svg` fragment has never been round-tripped through pycortex's
+  `svgoverlay.py` parser. Loading it into a real subject's `overlays.svg` and rendering with
+  `quickflat` is still a manual check.
 - `index.js` has no unit harness. The `labelForCurve` regression guard (a reshaped sulcus must
   relabel) sits on the pure helper in `draw-pipeline.js`, not on `_applyEdit`'s sulcus branch that
-  calls it. Only a manual browser check exercises the real call site.
-- `adapter/pycortex-adapter.js` and the three `ui/` overlays have no headless test; only
-  `test/bundle.test.js` catches build breakage. The open-curve rendering path (no trailing `Z`,
-  sulcal stroke weight) was verified by direct function extraction, not against a live pycortex
-  viewer.
+  calls it.
+- The `ui/` overlays have no headless test. The interactive gestures — dragging a trace, the
+  single handle at an open curve's endpoints, the absent closing chord in the edit preview — were
+  never exercised programmatically; only `test/bundle.test.js` catches build breakage.

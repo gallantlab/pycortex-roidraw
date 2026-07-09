@@ -1,11 +1,18 @@
 # pycortex-roidraw
 
-In-browser **ROI drawing + export** for [pycortex](https://github.com/gallantlab/pycortex) WebGL
-viewers. Lasso a region on the flattened cortical surface; the stroke is fitted to a smooth,
-**editable bezier** that renders as a colored outline (its palette color, over a white halo for
-legibility) + label **baked into the surface** (so it
-occludes and morphs correctly), and exports to a portable JSON. The bezier is stored alongside the
-vertex set, so reloaded ROIs can be re-edited by dragging their control points.
+In-browser **ROI + sulcus drawing and export** for
+[pycortex](https://github.com/gallantlab/pycortex) WebGL viewers. Draw on the flattened cortical
+surface and the stroke is fitted to a smooth, **editable bezier** that renders as a colored outline
+(its palette color, over a white halo for legibility) + label **baked into the surface**, so it
+occludes and morphs correctly.
+
+Two kinds of shape, each exported in the format its consumer expects:
+
+- **ROIs** are *closed* curves. They carry per-hemisphere vertex membership and export to a
+  portable JSON vertex set. The bezier is stored alongside it, so reloaded ROIs re-edit by dragging
+  their control points.
+- **Sulci** are *open* curves. They carry **no** vertex membership and export as an
+  `overlays.svg`-compatible SVG fragment — the way pycortex itself stores sulci.
 
 The whole feature ships as one self-contained script (`dist/roidraw.bundle.js`, CSS included), so
 it can be dropped into **any** pycortex viewer — a static one (like a `make_static` export) or a
@@ -45,43 +52,58 @@ python bake.py path/to/viewer_dir            # adds the bundle + the two <script
 A **Display / Draw** toggle sits at the top of the viewer.
 
 - **Display** — the normal pycortex viewer + control panel.
-- **Draw** — the brain flattens and the ROI panel appears. Drawing is **flat-only**: inflating the
-  surface (the unfold slider) returns you to Display. Then:
+- **Draw** — the brain flattens and the draw panel appears. Drawing is **flat-only**: inflating the
+  surface (the unfold slider) returns you to Display.
+
+At the top of the panel a **`ROI` / `Sulcus`** selector picks what a plain drag draws:
 
 | Gesture | Action |
 | --- | --- |
-| Drag | Lasso a region → name it → it's fitted to a smooth bezier and drawn onto the surface |
+| Drag, with **ROI** selected | Lasso a region → name it → fitted to a smooth *closed* bezier and drawn onto the surface |
+| Drag, with **Sulcus** selected | Trace along the sulcus → name it → fitted to a smooth *open* bezier |
 | Scroll wheel | Zoom (to draw fine detail) |
 | **Shift** + drag | Pan the surface |
 | **Shift** + click | Inspect the voxel under the cursor |
-| `Esc` | Cancel the current lasso (or finish editing) |
+| `Esc` | Cancel the current stroke (or finish editing) |
 
-The panel lists drawn ROIs and has **Export JSON** / **Import** / **Clear all**. Drawn ROIs are a
-toggleable overlay layer (Surface → overlays → "drawn ROIs") alongside the built-in rois/sulci.
+The panel lists everything drawn — a glyph marks each row's kind (**◯** ROI, **∿** sulcus), and the
+count column shows enclosed vertices for an ROI, anchors for a sulcus. Below the list sit
+**Export ROIs (JSON)** / **Export sulci (SVG)** / **Import** / **Clear all**. Everything drawn lives
+in one toggleable overlay layer (Surface → overlays → "drawn ROIs") alongside the built-in
+rois/sulci.
+
+A stray click can't create a shape: a trace must span more than a few pixels before it registers.
 
 ### Editing a shape — full bezier controls
 
-Click **✎ edit** next to an ROI in the panel (this re-flattens the surface if needed). The shape's
-anchors appear on the flatmap, and you get the full set of vector-editing controls:
+Click **✎ edit** next to any shape in the panel (this re-flattens the surface if needed). Its
+anchors appear on the flatmap, and you get the full set of vector-editing controls. ROIs and sulci
+edit identically:
 
 | Gesture | Action |
 | --- | --- |
-| Drag an anchor (**●**/**■**) | Move it; its two tangent handles travel with it |
-| Click an anchor | Select it → its two tangent handles (**○**) appear |
+| Drag an anchor (**●**/**■**) | Move it; its tangent handles travel with it |
+| Click an anchor | Select it → its tangent handles (**○**) appear |
 | Drag a handle (**○**) | Bend the curve. A **smooth** anchor mirrors the opposite handle; a **corner** anchor moves each side independently |
 | Double-click the curve | Insert a new anchor there (the curve shape is preserved) |
 | Double-click an anchor | Toggle it between **smooth** (●, circle) and **corner** (■, square) |
-| `Delete` / `Backspace` | Remove the selected anchor (a minimum of 3 is kept) |
+| `Delete` / `Backspace` | Remove the selected anchor (a closed curve keeps ≥ 3; an open one keeps ≥ 2) |
 | Scroll wheel | Zoom · **Shift** + drag | Pan |
 
-The anchors track the surface as you zoom/pan. Vertex membership is **re-derived from the bezier** on
-every change, so the exported vertex set always matches the curve you see. Click **✓ Done editing**
-(or `Esc`) to finish. Imported ROIs are editable too — older files without a bezier get one fitted
-from their boundary ring on import, and a freshly fit curve starts fully smooth.
+An **open** curve's two endpoints are special: each has only one live tangent (the other would
+coincide with the anchor), so a single handle appears there, and endpoints are always corners —
+there is no symmetric tangent to mirror at the end of a curve.
 
-### Export format
+The anchors track the surface as you zoom/pan. For an ROI, vertex membership is **re-derived from
+the bezier** on every change, so the exported vertex set always matches the curve you see. A sulcus
+has no membership to re-derive; its label instead follows the curve's midpoint. Click
+**✓ Done editing** (or `Esc`) to finish. Imported ROIs are editable too — older files without a
+bezier get one fitted from their boundary ring on import, and a freshly fit curve starts fully
+smooth.
 
-`rois.json` — per-hemisphere **subject** vertex indices, an ordered boundary ring, a label vertex,
+### ROI export format — `rois.json`
+
+Per-hemisphere **subject** vertex indices, an ordered boundary ring, a label vertex,
 and the editable **bezier** (control points in view-independent flat-UV `[0,1]`). It re-imports
 (here or in any viewer on the same surface) to the exact same outline, ready to re-edit:
 
@@ -105,23 +127,43 @@ and the editable **bezier** (control points in view-independent flat-UV `[0,1]`)
 
 The `bezier` carries explicit tangent handles and a per-anchor `smooth` flag, so a re-imported curve
 re-edits identically. `v1` files (no `bezier`) still import — the bezier is back-filled from the
-outline ring; a `bezier` from an earlier build (no `smooth`) is treated as all-smooth.
+outline ring; a `bezier` from an earlier build (no `smooth`) is treated as all-smooth. Sulci never
+appear in this file; it is an ROI format.
 
-### Sulci
+### Sulcus export format — `sulci.svg`
 
-Switch the panel's kind selector to **Sulcus** and drag along the sulcus. A sulcus is an *open*
-curve, editable exactly like an ROI's boundary. Trace each hemisphere separately and give both
-strokes the same name — on export they merge into one group, which is how pycortex's own overlays
-store a sulcus (`CaS` has one `<path>` per hemisphere).
+Sulci are **not** exported as JSON. **Export sulci (SVG)** downloads an `overlays.svg`-compatible
+fragment — pycortex's own storage format for sulci — which `quickflat.add_sulci`, the WebGL viewer,
+and Inkscape all read natively. Paste or merge it into the subject's `overlays.svg`:
 
-**Export sulci (SVG)** downloads an `overlays.svg`-compatible fragment. This is pycortex's own
-storage format for sulci: open `fill:none` paths in a `sulci` layer, carrying no vertex data.
-Paste or merge it into the subject's `overlays.svg` and `quickflat.add_sulci`, the WebGL viewer,
-and Inkscape will all read it.
+```xml
+<g inkscape:groupmode="layer" id="sulci" inkscape:label="sulci" style="display:inline">
+  <g inkscape:groupmode="layer" id="sulci_shapes" inkscape:label="shapes">
+    <g inkscape:groupmode="layer" inkscape:label="CS">
+      <path style="fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round"
+            d="M412.55,301.90C…" />   <!-- left hemisphere -->
+      <path style="fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round"
+            d="M598.31,297.44C…" />   <!-- right hemisphere -->
+    </g>
+  </g>
+  <g inkscape:groupmode="layer" id="sulci_labels" inkscape:label="labels">
+    <text data-ptidx="48213" …>CS</text>
+  </g>
+</g>
+```
 
-Sulci deliberately store **no vertex membership** — pycortex stores none either (there is no
-`get_sulci_verts`; sulci are display geometry). ROIs still export vertex indices as JSON,
-unchanged.
+Three things follow from matching pycortex rather than inventing a format:
+
+- **The paths never close.** A missing trailing `Z` is the *only* on-disk marker separating a sulcus
+  from an ROI in `overlays.svg` — both are `fill:none`.
+- **Same-named sulci merge into one group.** Trace a sulcus on each hemisphere and give both strokes
+  the same name; they become one `<g inkscape:label="CS">` with a `<path>` child each, exactly as
+  pycortex's own `CaS` is stored. Duplicate names are the intended workflow, not a mistake.
+- **Sulci carry no vertex membership.** pycortex stores none either — there is no `get_sulci_verts`;
+  sulci are display geometry. The only path→vertex mapping is the label's `data-ptidx`, which is
+  precisely what pycortex's own `set_coords` computes.
+
+Export is one-way: sulci are not re-imported from SVG.
 
 ---
 
@@ -134,8 +176,8 @@ core/      pure JS — no DOM, no THREE, no host globals (unit-tested under node
   geom.js        point-in-polygon, RDP simplify, Chaikin smooth, ndc↔pixel, centroid
   selection.js   projected vertices + polygon → selected vertex set (works in px OR uv)
   outline.js     polygon → ordered boundary ring of vertices (+ label vertex)
-  bezier.js      fit an editable closed bezier to a ring; sample it back to a polygon
-  transform.js   uv↔px homography (edit overlay only: place/grab knots in the current view)
+  bezier.js      fit an editable bezier — closed (ROI ring) or open (sulcus trace) — and edit it
+  transform.js   uv↔px homography (place/grab edit knots; map a traced stroke back to uv)
   shape-model.js the shape collection (ROIs + sulci) + the vertexset-v2 ROI export/import
   svg-export.js  pure writer for pycortex overlays.svg sulci markup
   draw-mode.js   the flat-only Draw state machine (the "reached flat" latch)
@@ -148,7 +190,9 @@ ui/        host-agnostic DOM components (talk only to core + adapter)
   lasso-overlay.js  bezier-edit-overlay.js  draw-panel.js  mode-toggle.js  roidraw.css
   overlay-geom.js   pure hit-testing math for the edit overlay (no DOM; unit-tested)
 
-draw-pipeline.js  lasso → select → fit bezier → re-derive membership (pure; uses core + an adapter)
+draw-pipeline.js  ROI: lasso → select → fit bezier → re-derive membership.
+                  Sulcus: trace → px→uv via homography → fit open bezier → label vertex.
+                  (pure; uses core + an adapter)
 index.js          controller wiring core + adapter + ui; exposes window.ROIDraw
 build.mjs         esbuild → dist/roidraw.bundle.js (CSS inlined)
 ```
@@ -178,11 +222,12 @@ npm run build      # -> dist/roidraw.bundle.js
 npm test           # builds the bundle, then runs the JS suite (node) + Python tooling tests
 ```
 
-The JS suite layers property-based geometry invariants, the Draw-mode state machine, the draw
-pipeline (driven headless against a synthetic-surface adapter), the edit-overlay hit-testing, an
-adapter-contract guard, a host preflight, and a smoke test of the built bundle. CI
-(`.github/workflows/test.yml`) runs it on every push. See [TESTING.md](TESTING.md) for what each
-layer guarantees — and the one gap (live-browser integration) it can't.
+The JS suite layers property-based geometry invariants (closed *and* open curves), the Draw-mode
+state machine, the draw pipeline (driven headless against a synthetic-surface adapter), the pure
+`overlays.svg` writer, the edit-overlay hit-testing, an adapter-contract guard, a host preflight,
+and a smoke test of the built bundle. CI (`.github/workflows/test.yml`) runs it on every push. See
+[TESTING.md](TESTING.md) for what each layer guarantees — and the gaps (live-browser integration)
+it can't.
 
 ## Requirements
 

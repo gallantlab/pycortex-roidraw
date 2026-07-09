@@ -17,7 +17,7 @@
  */
 import { ViewerAdapter } from "./viewer-adapter.js";
 import { chaikin } from "../core/geom.js";
-import { isClosed } from "../core/bezier.js";
+import { isClosed, segCount } from "../core/bezier.js";
 import { exportSulciSvg } from "../core/svg-export.js";
 
 const SVGNS = "http://www.w3.org/2000/svg";
@@ -506,9 +506,14 @@ export class PycortexAdapter extends ViewerAdapter {
     // native cubic path. Only ROIs have the legacy vertex-ring fallback (v1 files); a sulcus is
     // always bezier-backed, since it is created from a fitted open curve.
     _shapeSvgPath(shape, W, H) {
-        if (shape.bezier && shape.bezier.anchors && shape.bezier.anchors.length >= 2)
-            return this._bezierSvgPath(shape.bezier, W, H);
-        if (shape.kind === "sulcus") return null;
+        // Fall THROUGH when the bezier can't be emitted (too few anchors for its kind) rather than
+        // returning its null: an imported file could carry a malformed bezier, and an ROI that still
+        // has a good `outline` must render from that instead of silently vanishing.
+        if (shape.bezier && shape.bezier.anchors) {
+            const d = this._bezierSvgPath(shape.bezier, W, H);
+            if (d) return d;
+        }
+        if (shape.kind === "sulcus") return null;   // a sulcus is bezier-only; it has no outline
         if (!shape.outline || shape.outline.length < 3) return null;
         const pts = [];
         for (const o of shape.outline) {
@@ -534,7 +539,7 @@ export class PycortexAdapter extends ViewerAdapter {
         if (n < (closed ? 3 : 2)) return null;
         const P = (uv) => (uv[0] * W).toFixed(2) + "," + ((1 - uv[1]) * H).toFixed(2);
         let d = "M" + P(anchors[0]);
-        const segs = closed ? n : n - 1;
+        const segs = segCount(bez);   // n when closed (the wrap), n-1 when open
         for (let i = 0; i < segs; i++) {
             const j = closed ? (i + 1) % n : i + 1;
             d += "C" + P(outHandles[i]) + " " + P(inHandles[j]) + " " + P(anchors[j]);

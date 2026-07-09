@@ -2,7 +2,7 @@
 
 _Current status file. Most recent session at top._
 
-## 2026-07-08/09 — Sulcus drawing (v0.4.0): spec → plan → 12 TDD tasks → merged to local main; PUSH PENDING
+## 2026-07-08/09 — Sulcus drawing (v0.4.0): spec → plan → 12 TDD tasks → SHIPPED (release + demo + docs PR)
 
 User asked to add sulcus + gyrus drawing. Brainstormed; **researched how pycortex actually stores
 sulci** rather than inventing a format (user was emphatic: "USE WHATEVER METHOD PYCORTEX IS ALREADY
@@ -67,14 +67,29 @@ the `svgoverlay.py` round-trip (nothing has ever fed roidraw's SVG to pycortex's
 most important open item); every interactive gesture (the CDP run drove state, never a mouse drag);
 `index.js` has no unit harness.
 
+**Published (all three artifacts aligned).** Bundle SHA-256
+`29c71e99f84cbb78d6b7bb6119b384d584596db78cf60e97389f4eae9b1462df`, 112,117 B.
+- `pycortex-roidraw` **main pushed** (`ce25c54..af3e340`, 33 commits).
+- **Release v0.4.0 published**; `/releases/latest` → v0.4.0; live asset SHA verified == local.
+- **Demo re-baked**: `gallantlab/viewer-stories-group-roidraw` commit `5946458ee2`. Bundle was
+  downloaded **from the published release asset** (not the local build) so demo == release
+  provably; live raw SHA verified. `viewer.html` untouched (`_updateGen` ×2 intact). README now
+  documents the `ROI | Sulcus` selector + both export formats, and drops two stale claims (roidraw
+  is public, not private; this build pins a bundle rather than tracking `/releases/latest`). Repo
+  description bumped to v0.4.0.
+- **pycortex docs PR #656** open (`claude/document-sulcus-drawing`): retitles `docs/roidraw.rst`,
+  documents the SVG export, fixes the stale cross-link title in `docs/rois.rst`. Docs-only.
+- Ordering that matters: release FIRST, then re-bake + docs — the docs link to `/releases/latest`,
+  so re-baking or merging docs early leaves users a bundle older than what they read about.
+- Gotcha confirmed again: the demo re-bake needs `git add` before commit; a bare `git commit -m`
+  silently stages nothing.
+
 **Open / next time:**
-- `git push origin main` (32 commits). Then cut the **v0.4.0** GitHub release with
-  `dist/roidraw.bundle.js` (112,117 B) attached, and **re-bake the demo viewer** — it is *pinned* to
-  a bundle, not tracking `/releases/latest`. Gotcha from last time: the re-bake needs `git add`
-  before commit. Detect v0.4.0 via markers `fitOpenBezier` / `exportSulciSvg` / `ShapeSet`.
-- **pycortex docs PR is staged but unpushed**: `pycortex-src` branch `claude/document-sulcus-drawing`
-  (2 commits) retitles `docs/roidraw.rst` to "In-browser ROI and sulcus drawing", documents the SVG
-  export, and fixes the stale cross-link title in `docs/rois.rst`.
+- **PR #656 is unmerged.** The repo has no required checks, so `gh pr merge` lands immediately.
+- The **`svgoverlay.py` round-trip is still unverified** — nothing has ever fed roidraw's exported
+  `sulci.svg` to pycortex's own parser. Highest-value next check; needs a subject.
+- Interactive gestures (trace drag, endpoint handles, label-follows-reshape) verified only by eye.
+- Detect v0.4.0 in a built bundle via markers `fitOpenBezier` / `exportSulciSvg` / `ShapeSet`.
 - Docs artifacts live under `docs/superpowers/` (spec, plan, manual checklist).
 
 ## 2026-07-02 — Full-project code review → 4 fixes (v0.3.4); release + demo re-bake PENDING (auth-blocked)

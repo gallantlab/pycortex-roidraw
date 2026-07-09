@@ -122,6 +122,16 @@ function correspondences(adapter) {
     return { src, dst };
 }
 
+/* The label vertex for an open curve: the surface vertex nearest the curve's midpoint sample.
+ * Shared by the initial trace and by every subsequent edit, so a reshaped sulcus relabels the
+ * same way a freshly traced one does. (Cf. backfillLabel, which does the analogous job for an
+ * ROI ring.) Returns {h,g} or null. */
+export function labelForCurve(adapter, bezier) {
+    const poly = evalOpenBezier(bezier, TRACE_SAMPLES);
+    const mid = poly[poly.length >> 1];
+    return mid ? nearestVertexTo(adapter, mid) : null;
+}
+
 /*
  * A traced stroke -> an editable OPEN bezier, plus a label vertex.
  *
@@ -149,7 +159,5 @@ export function curveFromTrace(adapter, pts) {
     const bezier = fitOpenBezier(uvPts);
     if (!bezier) return null;
 
-    const poly = evalOpenBezier(bezier, TRACE_SAMPLES);
-    const mid = poly[poly.length >> 1];
-    return { bezier, labelVert: mid ? nearestVertexTo(adapter, mid) : null };
+    return { bezier, labelVert: labelForCurve(adapter, bezier) };
 }

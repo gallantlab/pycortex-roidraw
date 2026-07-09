@@ -10,7 +10,7 @@
 import { PycortexAdapter, surfaceReady, findSurface } from "./adapter/pycortex-adapter.js";
 import { ShapeSet } from "./core/shape-model.js";
 import { DrawModeMachine } from "./core/draw-mode.js";
-import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel, curveFromTrace } from "./draw-pipeline.js";
+import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel, curveFromTrace, labelForCurve } from "./draw-pipeline.js";
 import { LassoOverlay } from "./ui/lasso-overlay.js";
 import { BezierEditOverlay } from "./ui/bezier-edit-overlay.js";
 import { DrawPanel } from "./ui/draw-panel.js";
@@ -208,9 +208,14 @@ class ROIDrawer {
         if (shape.kind === "roi") {
             const d = roiFromBezier(this.adapter, bezier);
             if (d && d.total) { shape.left = d.left; shape.right = d.right; shape.outline = d.outline; shape.labelVert = d.labelVert; }
+        } else {
+            // A sulcus has no membership to re-derive, but its label must follow the curve — otherwise a
+            // reshaped sulcus exports a <text data-ptidx> pinned to its original midpoint.
+            const lv = labelForCurve(this.adapter, bezier);
+            if (lv) shape.labelVert = lv;
         }
         this.adapter.setOverlayLayer(LAYER, this.shapes.shapes);   // re-rasterize the smooth outline
-        this.panel.renderList(this.shapes.shapes);                 // refresh the vertex count
+        this.panel.renderList(this.shapes.shapes);                 // refresh the anchor/vertex list for this shape's kind
     }
 
     _sync() {

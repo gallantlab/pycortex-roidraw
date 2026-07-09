@@ -7,8 +7,8 @@
 import test from "node:test";
 import assert from "node:assert";
 import { FakeSurfaceAdapter } from "./fake-adapter.js";
-import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel, curveFromTrace, nearestVertexTo } from "../draw-pipeline.js";
-import { bezierFromAnchors, evalClosedBezier } from "../core/bezier.js";
+import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel, curveFromTrace, nearestVertexTo, labelForCurve } from "../draw-pipeline.js";
+import { bezierFromAnchors, evalClosedBezier, evalOpenBezier } from "../core/bezier.js";
 import { pointInPolygon } from "../core/geom.js";
 import { fitHomography, applyHomography } from "../core/transform.js";
 
@@ -172,6 +172,29 @@ test("curveFromTrace: null on a degenerate single-point stroke", () => {
     assert.strictEqual(curveFromTrace(a, [[10, 10]]), null);
     assert.strictEqual(curveFromTrace(a, [[10, 10], [10, 10]]), null);
     assert.strictEqual(curveFromTrace(a, []), null);
+});
+
+test("labelForCurve: equals nearestVertexTo of the curve's midpoint sample, computed independently", () => {
+    const a = adapter();
+    const bez = bezierFromAnchors([[0.2, 0.3], [0.4, 0.35], [0.6, 0.4], [0.8, 0.45]], false);
+    // independently reproduce the "midpoint sample" rule: sample the open curve, take the middle point
+    const TRACE_SAMPLES = 24;
+    const poly = evalOpenBezier(bez, TRACE_SAMPLES);
+    const expected = nearestVertexTo(a, poly[poly.length >> 1]);
+
+    const lv = labelForCurve(a, bez);
+    assert.deepStrictEqual(lv, expected, "labelForCurve must pick the vertex nearest the curve's midpoint sample");
+});
+
+test("labelForCurve: a differently-placed (translated) curve gets a DIFFERENT label vertex", () => {
+    // This is the regression test for the stale-label bug: reshaping a sulcus must relabel it.
+    const a = adapter();
+    const bez1 = bezierFromAnchors([[0.2, 0.3], [0.4, 0.35], [0.6, 0.4], [0.8, 0.45]], false);
+    const bez2 = bezierFromAnchors([[0.2, 0.6], [0.4, 0.65], [0.6, 0.7], [0.8, 0.75]], false); // shifted in v
+    const lv1 = labelForCurve(a, bez1);
+    const lv2 = labelForCurve(a, bez2);
+    assert.ok(lv1 && lv2, "both curves should resolve a label vertex");
+    assert.notDeepStrictEqual(lv1, lv2, "a reshaped/moved curve must not keep the old label vertex");
 });
 
 test("curveFromTrace: null when the homography cannot be fit", () => {

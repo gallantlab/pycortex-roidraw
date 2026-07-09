@@ -13,7 +13,7 @@
  */
 import test from "node:test";
 import assert from "node:assert";
-import { ROISet } from "../core/roi-model.js";
+import { ShapeSet } from "../core/shape-model.js";
 import { fitClosedBezier, evalClosedBezier, bezierFromAnchors, fitOpenBezier, evalOpenBezier, isClosed, moveAnchor, setAnchorSmooth, deleteAnchor, splitSegment } from "../core/bezier.js";
 import { fitHomography, applyHomography, invertHomography } from "../core/transform.js";
 import { selectInPolygon } from "../core/selection.js";
@@ -55,7 +55,7 @@ function cloud(r, n) {
 test("PROPERTY: ROI export/import is lossless (vertices, outline, label, bezier)", () => {
     const r = rng(1);
     for (let t = 0; t < TRIALS; t++) {
-        const src = new ROISet();
+        const src = new ShapeSet();
         const nrois = 1 + (Math.floor(r() * 4));
         for (let k = 0; k < nrois; k++) {
             const ring = convexRing(r, 3 + Math.floor(r() * 6));
@@ -66,11 +66,11 @@ test("PROPERTY: ROI export/import is lossless (vertices, outline, label, bezier)
             src.add({ name: "roi" + k, left, right, outline, labelVert: outline[0], bezier: bez });
         }
         const doc = JSON.parse(JSON.stringify(src.toJSON("surfX")));  // simulate a file round-trip
-        const dst = new ROISet();
+        const dst = new ShapeSet();
         dst.loadJSON(doc);
-        assert.strictEqual(dst.rois.length, src.rois.length, `trial ${t}: roi count`);
-        for (let i = 0; i < src.rois.length; i++) {
-            const a = src.rois[i], b = dst.rois[i];
+        assert.strictEqual(dst.shapes.length, src.shapes.length, `trial ${t}: roi count`);
+        for (let i = 0; i < src.shapes.length; i++) {
+            const a = src.shapes[i], b = dst.shapes[i];
             assert.deepStrictEqual(b.left, a.left, `trial ${t} roi ${i}: left verts`);
             assert.deepStrictEqual(b.right, a.right, `trial ${t} roi ${i}: right verts`);
             assert.deepStrictEqual(b.outline, a.outline, `trial ${t} roi ${i}: outline`);

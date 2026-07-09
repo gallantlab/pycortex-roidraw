@@ -8,7 +8,7 @@
  *   autoAttach(opts)       -> poll until the viewer is ready, then attach (for make_static onload)
  */
 import { PycortexAdapter, surfaceReady, findSurface } from "./adapter/pycortex-adapter.js";
-import { ROISet } from "./core/roi-model.js";
+import { ShapeSet } from "./core/shape-model.js";
 import { DrawModeMachine } from "./core/draw-mode.js";
 import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel } from "./draw-pipeline.js";
 import { LassoOverlay } from "./ui/lasso-overlay.js";
@@ -33,7 +33,7 @@ class ROIDrawer {
     constructor(viewer, opts = {}) {
         injectCss();
         this.adapter = new PycortexAdapter(viewer, opts); // throws if the surface isn't ready
-        this.rois = new ROISet();
+        this.shapes = new ShapeSet();
         // Drawing is flat-only. The DrawModeMachine owns the mode and the "reached flat since the
         // last flatten-for-draw" latch, so the transient non-flat mix events emitted *during* a
         // flatten glide don't bounce us back out of Draw. this.mode reads through to it.
@@ -143,12 +143,12 @@ class ROIDrawer {
         const sel = deriveRoiFromLasso(this.adapter, pts);
         if (!sel.total) { this.panel.message("0 vertices selected — lasso the flatmap."); return; }
 
-        const fallback = "roi" + (this.rois.length + 1);
+        const fallback = "roi" + (this.shapes.byKind("roi").length + 1);
         const entered = window.prompt("ROI name:", fallback);
         if (entered === null) return;                 // Cancel
         const name = entered.trim() || fallback;      // OK on a blank/whitespace field => use the default
-        this.rois.add({
-            name, left: sel.left, right: sel.right,
+        this.shapes.add({
+            kind: "roi", name, left: sel.left, right: sel.right,
             outline: sel.outline, labelVert: sel.labelVert, bezier: sel.bezier,
         });
         this._sync();
@@ -159,7 +159,7 @@ class ROIDrawer {
 
     // Toggle shape editing. id => start editing that ROI's bezier; null => stop.
     _editToggle(id) {
-        const roi = id != null ? this.rois.rois.find((r) => r.id === id) : null;
+        const roi = id != null ? this.shapes.shapes.find((r) => r.id === id) : null;
         // Editing happens on the flatmap (the bezier knots live in the flat view). Starting an edit
         // re-flattens if the surface has been inflated, so the shape's anchors land on the surface.
         if (roi && this._dm.noteEditStart(this.adapter.isFlat()).flatten) this.adapter.flatten();
@@ -167,39 +167,39 @@ class ROIDrawer {
         this.editOverlay.setEditing(roi || null);
         this.panel.setEditingId(this.editingId);
         this._updateDrawActive();            // lasso off while editing, back on when done
-        this.panel.renderList(this.rois.rois);
+        this.panel.renderList(this.shapes.shapes);
         this._renderStatus();
     }
 
     // A drag-release from the edit overlay: store the new bezier and re-derive vertices from it.
     _applyEdit(bezier) {
-        const roi = this.rois.rois.find((r) => r.id === this.editingId);
+        const roi = this.shapes.shapes.find((r) => r.id === this.editingId);
         if (!roi) return;
         roi.bezier = bezier;
         const d = roiFromBezier(this.adapter, bezier);
         if (d && d.total) { roi.left = d.left; roi.right = d.right; roi.outline = d.outline; roi.labelVert = d.labelVert; }
-        this.adapter.setOverlayLayer(LAYER, this.rois.rois);   // re-rasterize the smooth outline
-        this.panel.renderList(this.rois.rois);                 // refresh the vertex count
+        this.adapter.setOverlayLayer(LAYER, this.shapes.shapes);   // re-rasterize the smooth outline
+        this.panel.renderList(this.shapes.shapes);                 // refresh the vertex count
     }
 
     _sync() {
-        this.adapter.setOverlayLayer(LAYER, this.rois.rois);
-        this.panel.renderList(this.rois.rois);
+        this.adapter.setOverlayLayer(LAYER, this.shapes.shapes);
+        this.panel.renderList(this.shapes.shapes);
     }
 
     remove(id) {
         if (id === this.editingId) this._editToggle(null);
-        this.rois.remove(id);
+        this.shapes.remove(id);
         this._sync();
     }
-    clear() { this._editToggle(null); this.rois.clear(); this._sync(); }
+    clear() { this._editToggle(null); this.shapes.clear(); this._sync(); }
 
     // --- export / import --------------------------------------------------------------
 
     exportJSON() {
-        if (!this.rois.length) { this.panel.message("Nothing to export."); return; }
+        if (!this.shapes.byKind("roi").length) { this.panel.message("Nothing to export."); return; }
         let text;
-        try { text = JSON.stringify(this.rois.toJSON(this.adapter.surfaceId()), null, 2); }
+        try { text = JSON.stringify(this.shapes.toJSON(this.adapter.surfaceId()), null, 2); }
         catch (e) { this.panel.message("Export failed: " + (e && e.message ? e.message : e)); return; }
         const blob = new Blob([text], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -212,7 +212,7 @@ class ROIDrawer {
         // Firefox writes a 0-byte file if the anchor is removed / the URL revoked before the
         // download starts — defer both well past the click instead of tearing down immediately.
         setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
-        this.panel.message("Exported " + this.rois.length + " ROI(s), " + text.length + " bytes, to rois.json.");
+        this.panel.message("Exported " + this.shapes.byKind("roi").length + " ROI(s), " + text.length + " bytes, to rois.json.");
     }
 
     _import(file) {
@@ -224,7 +224,7 @@ class ROIDrawer {
                     this.panel.message("Import failed: “" + file.name + "” is empty (0 bytes). Re-export and try again.");
                     return;
                 }
-                const added = this.rois.loadJSON(JSON.parse(text));
+                const added = this.shapes.loadJSON(JSON.parse(text));
                 // back-fill an editable bezier for ROIs saved before this feature (v1 files), so
                 // imported shapes can be edited just like freshly drawn ones.
                 let fitted = 0;

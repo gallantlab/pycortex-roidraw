@@ -576,6 +576,24 @@ test("property: an open curve's endpoints are always corners after a fit", () =>
         assert.strictEqual(bez.smooth[bez.smooth.length - 1], false);
     }
 });
+
+// Regression guard: deleteAnchor once promoted an interior anchor to endpoint while leaving its
+// `smooth:true` flag and a live off-anchor handle behind. An open curve's endpoints are corners
+// no matter HOW the curve got to its current anchor list, not just when freshly fit.
+test("property: an open curve's endpoints stay corners after any single delete", () => {
+    const rnd = rng(0xC0FFEE);
+    const eq = (p, q) => p[0] === q[0] && p[1] === q[1];
+    for (let c = 0; c < TRIALS; c++) {
+        const bez = fitOpenBezier(randomOpenPolyline(rnd, 4 + Math.floor(rnd() * 10)));
+        if (bez.anchors.length <= 2) continue;               // at the floor, delete is a no-op
+        const d = deleteAnchor(bez, Math.floor(rnd() * bez.anchors.length));
+        const n = d.anchors.length;
+        assert.strictEqual(d.smooth[0], false, "first anchor must be a corner");
+        assert.strictEqual(d.smooth[n - 1], false, "last anchor must be a corner");
+        assert.ok(eq(d.inHandles[0], d.anchors[0]), "unused in-handle must sit on the first anchor");
+        assert.ok(eq(d.outHandles[n - 1], d.anchors[n - 1]), "unused out-handle must sit on the last anchor");
+    }
+});
 ```
 
 `test/properties.test.js` imports only `fitClosedBezier`/`evalClosedBezier` from `core/bezier.js` today. Extend that import to add exactly: `fitOpenBezier, evalOpenBezier, isClosed, moveAnchor, setAnchorSmooth, deleteAnchor, splitSegment`.

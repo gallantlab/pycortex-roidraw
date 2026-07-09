@@ -114,11 +114,34 @@ Closed by that check, against a real pycortex viewer:
   `fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round`.
 - No sulcus leaks into the `vertexset-v2` JSON, and its `format` string is unchanged.
 
-Still open:
+### Nothing roidraw writes has ever been read back outside these tests
 
+Worth stating plainly, because it is easy to mistake the property tests for end-to-end coverage.
+The two export formats have *different* gaps:
+
+- **`sulci.svg` has a foreign consumer that has never been asked.** The whole point of matching
+  pycortex's format is that `cortex/svgoverlay.py`, `quickflat`, the WebGL viewer, and Inkscape read
+  it. None of them ever has. Merging a fragment into a real subject's `overlays.svg`, confirming
+  `db.get_overlay()` parses it, and rendering with `quickflat` is the check that would substantiate
+  the claim this feature is built on. It needs a subject and an importable `cortex`.
+- **`rois.json` has no foreign consumer at all.** `pycortex-roidraw/vertexset-v2` is a roidraw-native
+  format; no Python reader exists here or in pycortex, deliberately (`get_roi_masks` does not read
+  it). So "read it back" can only mean re-importing into roidraw. The **format** round-trip is
+  strong — `test/properties.test.js` runs `toJSON` → `JSON.stringify` → `JSON.parse` → `loadJSON`
+  over 300 seeded trials and compares vertices, outline, label, and bezier. But the README's
+  "re-imports in any viewer on the same surface" has never been demonstrated across two viewers or
+  against real surface data.
+
+Still open, in both directions:
+
+- The browser **`_import`** path — `FileReader`, the empty-file guard, `reader.onerror`,
+  `backfillBezier`/`backfillLabel` for v1 files, `_sync`, the panel refresh — has **zero** coverage.
+  No test touches `FileReader` or `_import`, and the live-viewer check called `toJSON` only, never
+  `loadJSON`.
+- Both **download** paths (`Blob` → anchor → `revokeObjectURL`), for JSON and for SVG. The 4000 ms
+  deferred teardown exists because Firefox otherwise writes a 0-byte file — and is untested.
 - The exported `sulci.svg` fragment has never been round-tripped through pycortex's
-  `svgoverlay.py` parser. Loading it into a real subject's `overlays.svg` and rendering with
-  `quickflat` is still a manual check.
+  `svgoverlay.py` parser (see above).
 - `index.js` has no unit harness. The `labelForCurve` regression guard (a reshaped sulcus must
   relabel) sits on the pure helper in `draw-pipeline.js`, not on `_applyEdit`'s sulcus branch that
   calls it.

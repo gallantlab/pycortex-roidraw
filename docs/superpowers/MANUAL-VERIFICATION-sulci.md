@@ -69,10 +69,29 @@ Open the viewer, switch to **Draw** mode.
    itself — the `Blob`/anchor path — was not exercised.)*
 
 9. ⬜ **Round-trip into pycortex.** Paste (or merge) the `sulci.svg` fragment into the subject's
-   `overlays.svg` and confirm `cortex.quickflat.make_figure(..., with_sulci=True)` (or the WebGL
-   viewer's sulci overlay) renders the traced sulci correctly — open strokes, correct name, correct
-   position. **This is the single most important unverified step**: nothing has ever fed roidraw's
-   output to `cortex/svgoverlay.py`'s parser.
+   `overlays.svg` and confirm `db.get_overlay(subject)` parses it (the sulci appear under
+   `svg.sulci`) and `cortex.quickflat.make_figure(..., with_sulci=True)` (or the WebGL viewer's sulci
+   overlay) renders the traced sulci correctly — open strokes, correct name, correct position.
+   **This is the single most important unverified step**: nothing has ever fed roidraw's output to
+   `cortex/svgoverlay.py`'s parser.
+
+10. ⬜ **ROI round-trip through a real file.** The ROI side has never been read back either — the
+    format round-trip is proven in `test/properties.test.js` (300 seeded trials through a real
+    `JSON.stringify`/`JSON.parse`), but the *browser* import path has zero coverage: no test touches
+    `FileReader` or `_import`, and the live-viewer check only called `toJSON`. So:
+
+    - Draw an ROI, click **Export ROIs (JSON)**, and confirm `rois.json` actually downloads and is
+      non-empty. (The `Blob` → anchor → `revokeObjectURL` path is untested; its 4000 ms deferred
+      teardown exists because Firefox otherwise writes a 0-byte file — **test this in Firefox too**.)
+    - **Clear all**, then **Import** that file. Confirm the ROI returns with the same vertex count,
+      the same outline, and that **✎ edit** still works (the bezier survived).
+    - Repeat with a **v1 file** (one with no `bezier`) if you have one: the importer should back-fill
+      a bezier from the outline ring and a label vertex, and the shape should become editable.
+    - Do the same for **Export sulci (SVG)** — confirm the download fires and the file is non-empty.
+
+    Note there is no external consumer for `rois.json`: no Python reader exists in roidraw or in
+    pycortex, by design (`get_roi_masks` does not read it). Re-importing into roidraw is the only
+    round-trip that exists.
 
 ## If something fails
 

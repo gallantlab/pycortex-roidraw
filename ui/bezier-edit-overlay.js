@@ -278,19 +278,21 @@ export class BezierEditOverlay {
         const c = this._hitCurve(pt);
         if (c) {                                               // add an anchor on the curve
             this.bez = splitSegment(this.bez, c.seg, c.t);
+            this._invalidatePointerTargets();                  // the splice shifted every index past seg
             this._select(c.seg + 1); this._recurve(); this._commit(); this.reproject();
         }
     }
 
     _hitTestAnchorOnly(pt) { return nearestWithin(this._anchorPx, pt, HIT_RADIUS); }
 
-    /* Drop any in-flight drag. Call whenever the anchor list changes underneath one, so a stale
-     * `_drag.i` can't be written through on the next mousemove. */
-    _cancelDrag() {
-        if (!this._drag) return;
+    /* Drop every pointer target that names an anchor by index. Call whenever the anchor list
+     * changes underneath one: a stale `_drag.i` would be written through on the next mousemove
+     * (moving the wrong anchor), and a stale `_hover.i` would draw the wrong anchor enlarged. */
+    _invalidatePointerTargets() {
         this._drag = null;
         this._dragMoved = false;
         this._downPt = null;
+        this._hover = null;
         this.el.style.cursor = "default";
     }
 
@@ -303,10 +305,10 @@ export class BezierEditOverlay {
         const before = this.bez.anchors.length;
         this.bez = deleteAnchor(this.bez, this._sel);
         if (this.bez.anchors.length === before) return;        // refused (floor: 3 closed, 2 open)
-        // A drag in flight targets an anchor index that this splice just invalidated: the index is
-        // either past the end now, or it silently refers to a DIFFERENT anchor. Cancel the drag —
-        // the thing being dragged no longer exists.
-        this._cancelDrag();
+        // A drag or hover in flight names an anchor index that this splice just invalidated: the
+        // index is either past the end now, or it silently refers to a DIFFERENT anchor. Drop them
+        // — the thing being pointed at no longer exists.
+        this._invalidatePointerTargets();
         this._sel = -1; this._recurve(); this._commit(); this.reproject();
     }
 

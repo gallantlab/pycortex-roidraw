@@ -14,7 +14,7 @@ export class DrawPanel {
         el.className = "roidraw-panel";
 
         const h = document.createElement("h2");
-        h.textContent = "ROI draw";
+        h.textContent = "Draw ROIs + sulci";
         el.appendChild(h);
 
         // Which gesture a plain drag performs. An ROI is a closed lasso; a sulcus is an open trace.

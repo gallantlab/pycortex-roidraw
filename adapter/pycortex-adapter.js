@@ -406,14 +406,22 @@ export class PycortexAdapter extends ViewerAdapter {
 
     // --- overlay layer (occlusion-correct ROI rendering) ------------------------------
 
+    /* The overlay's drawing dimensions. Paths live in the viewBox coordinate system, NOT the
+     * (later-overwritten) width/height. Rendering and export must agree on this or the exported
+     * markup would not line up with what the user drew. */
+    _overlayDims(svgo) {
+        const vb = (svgo.svg.getAttribute("viewBox") || "").split(/[\s,]+/).map(parseFloat);
+        return {
+            W: (vb.length === 4 && vb[2]) ? vb[2] : svgo.width,
+            H: (vb.length === 4 && vb[3]) ? vb[3] : svgo.height,
+        };
+    }
+
     setOverlayLayer(name, shapes) {
         const svgo = this.surface.svg;
         if (!svgo || !svgo.svg || !svgo.posdata || !svgo.depth) return false; // overlay not loaded yet
         const doc = svgo.svg.ownerDocument;
-        // Paths live in the viewBox coordinate system, NOT the (later-overwritten) width/height.
-        const vb = (svgo.svg.getAttribute("viewBox") || "").split(/[\s,]+/).map(parseFloat);
-        const W = (vb.length === 4 && vb[2]) ? vb[2] : svgo.width;
-        const H = (vb.length === 4 && vb[3]) ? vb[3] : svgo.height;
+        const { W, H } = this._overlayDims(svgo);
 
         // tear down the previous layer + its label sprites
         if (this._drawn) {
@@ -556,9 +564,7 @@ export class PycortexAdapter extends ViewerAdapter {
     exportSulciMarkup(sulci) {
         const svgo = this.surface.svg;
         if (!svgo || !svgo.svg) return "";
-        const vb = (svgo.svg.getAttribute("viewBox") || "").split(/[\s,]+/).map(parseFloat);
-        const W = (vb.length === 4 && vb[2]) ? vb[2] : svgo.width;
-        const H = (vb.length === 4 && vb[3]) ? vb[3] : svgo.height;
+        const { W, H } = this._overlayDims(svgo);
         return exportSulciSvg(sulci, {
             pathFor: (bez) => (bez ? this._bezierSvgPath(bez, W, H) : null),
             ptidxFor: (lv) => this._labelPtidx(lv),

@@ -1616,22 +1616,29 @@ Accept and store the callback:
         this.onTool = onTool || (() => {});
 ```
 
-Add the setter:
+Add the setter and a separate reflector:
 
 ```js
-    /* Select the active draw tool and reflect it on the segmented control. */
-    setTool(tool) {
-        this.tool = tool === "trace" ? "trace" : "lasso";
+    /* Paint the segmented control to match this.tool. Fires no callback. */
+    _reflectTool() {
         for (const [t, b] of Object.entries(this._toolBtns)) {
             const on = t === this.tool;
             b.classList.toggle("roidraw-tools__btn--on", on);
             b.setAttribute("aria-pressed", String(on));
         }
+    }
+
+    /* Select the active draw tool, reflect it, and notify the controller. */
+    setTool(tool) {
+        this.tool = tool === "trace" ? "trace" : "lasso";
+        this._reflectTool();
         this.onTool(this.tool);
     }
 ```
 
-Call `this.setTool("lasso")` at the end of the constructor, just before `this.renderList([])`, so the initial classes/ARIA are applied. (`onTool` is a no-op at that point if the controller passed none; the controller sets its own default in Task 11.)
+At the end of the constructor, just before `this.renderList([])`, call **`this._reflectTool()`** — **not** `this.setTool("lasso")`.
+
+This matters. `setTool` fires `onTool`, which the controller (Task 11) routes to `_setTool` → `_renderStatus()` → `this.panel.setStatus(...)`. During `this.panel = new DrawPanel({…})` the field `this.panel` is still `undefined`, so that call would throw. It happens not to today only because `_renderStatus` early-returns while the mode is `"display"` — an accident, not a guarantee. Paint the initial state without emitting an event.
 
 - [ ] **Step 2: Add the sulcus export button**
 

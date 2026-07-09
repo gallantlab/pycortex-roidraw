@@ -7,9 +7,10 @@
 import test from "node:test";
 import assert from "node:assert";
 import { FakeSurfaceAdapter } from "./fake-adapter.js";
-import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel } from "../draw-pipeline.js";
+import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel, curveFromTrace, nearestVertexTo } from "../draw-pipeline.js";
 import { bezierFromAnchors, evalClosedBezier } from "../core/bezier.js";
 import { pointInPolygon } from "../core/geom.js";
+import { fitHomography, applyHomography } from "../core/transform.js";
 
 // grid 11x11: vertex (i,j) has subject index i*11+j, uv [i/10, j/10]. px is a REAL rotated/offset
 // projection of uv (see fake-adapter.js), so px-space lassos must round-trip through that transform.
@@ -130,4 +131,56 @@ test("round-trip: a drawn lasso's bezier re-derives a non-empty membership insid
         // tight: every re-derived vertex must lie within the actual lassoed uv rectangle [0.3,0.7]
         assert.ok(u >= 0.3 && u <= 0.7 && v >= 0.3 && v <= 0.7, `re-derived vertex ${g} (uv ${u},${v}) should sit within the lassoed region`);
     }
+});
+
+test("nearestVertexTo: returns the analytically nearest vertex", () => {
+    const a = new FakeSurfaceAdapter();
+    const all = a.allVertexUV();
+    const target = all.left.uv[7];
+    const hit = nearestVertexTo(a, [target[0] + 1e-6, target[1] - 1e-6]);
+    assert.deepStrictEqual(hit, { h: "left", g: all.left.idx[7] });
+});
+
+test("nearestVertexTo: null on an empty surface", () => {
+    const empty = { allVertexUV: () => ({ left: { idx: [], uv: [] }, right: { idx: [], uv: [] } }) };
+    assert.strictEqual(nearestVertexTo(empty, [0.5, 0.5]), null);
+});
+
+test("curveFromTrace: recovers a stroke drawn along known uv points", () => {
+    const a = new FakeSurfaceAdapter();
+    // pick 5 uv points along a line, project them to px, and trace exactly through them
+    const uvPath = [[0.30, 0.50], [0.40, 0.52], [0.50, 0.54], [0.60, 0.56], [0.70, 0.58]];
+    const proj = a.projectVerticesInUvBounds({ minu: -Infinity, maxu: Infinity, minv: -Infinity, maxv: Infinity });
+    const src = [], dst = [];
+    for (const h of ["left", "right"]) for (let i = 0; i < proj[h].uv.length; i++) { src.push(proj[h].uv[i]); dst.push(proj[h].px[i]); }
+    const H = fitHomography(src, dst);
+    const pxPath = uvPath.map((uv) => applyHomography(H, uv));
+
+    const out = curveFromTrace(a, pxPath);
+    assert.ok(out && out.bezier, "expected a curve");
+    assert.strictEqual(out.bezier.closed, false);
+    // endpoints round-trip back to the uv we drew through
+    const first = out.bezier.anchors[0];
+    const last = out.bezier.anchors[out.bezier.anchors.length - 1];
+    assert.ok(Math.hypot(first[0] - 0.30, first[1] - 0.50) < 1e-6, "first anchor " + first);
+    assert.ok(Math.hypot(last[0] - 0.70, last[1] - 0.58) < 1e-6, "last anchor " + last);
+    assert.ok(out.labelVert && (out.labelVert.h === "left" || out.labelVert.h === "right"));
+});
+
+test("curveFromTrace: null on a degenerate single-point stroke", () => {
+    const a = new FakeSurfaceAdapter();
+    assert.strictEqual(curveFromTrace(a, [[10, 10]]), null);
+    assert.strictEqual(curveFromTrace(a, [[10, 10], [10, 10]]), null);
+    assert.strictEqual(curveFromTrace(a, []), null);
+});
+
+test("curveFromTrace: null when the homography cannot be fit", () => {
+    const collinear = {
+        projectVerticesInUvBounds: () => ({
+            left: { uv: [[0, 0], [1, 1], [2, 2], [3, 3]], px: [[0, 0], [1, 1], [2, 2], [3, 3]] },
+            right: { uv: [], px: [] },
+        }),
+        allVertexUV: () => ({ left: { idx: [0], uv: [[0, 0]] }, right: { idx: [], uv: [] } }),
+    };
+    assert.strictEqual(curveFromTrace(collinear, [[0, 0], [5, 5], [9, 1]]), null);
 });

@@ -16,11 +16,24 @@
  *  2. One named sulcus commonly holds SEVERAL <path> children — pycortex's own `CaS` has two,
  *     one per hemisphere. So same-named curves merge into a single group rather than colliding.
  *
- * Style is copied verbatim from cortex/defaults.cfg [sulci_paths]. (That section has no
- * stroke-linecap; don't add one.)
+ * Style: cortex/defaults.cfg [sulci_paths] has ten keys. We emit the five that carry visual
+ * meaning for a standalone open stroke:
+ *   - stroke:white, stroke-width:6, stroke-opacity:0.6, fill:none — the base look.
+ *   - stroke-linecap:round — REQUIRED. A sulcus is an OPEN stroke, so its end caps are visible
+ *     geometry, and this is the one [sulci_paths] key that [rois_paths] lacks; it is precisely
+ *     what distinguishes sulcal styling from ROI styling.
+ * We deliberately omit the other five [sulci_paths] keys:
+ *   - display:inline, filter:url(#dropshadow) — a dangling filter reference if this fragment is
+ *     pasted into a document that lacks the #dropshadow def.
+ *   - stroke-dashoffset / stroke-dasharray — their config value is the literal string "None",
+ *     not valid CSS.
+ *   - fill-opacity:0 — redundant with fill:none.
+ * Note this on-disk style governs raw/Inkscape rendering only: pycortex's Overlay.set()
+ * re-applies [sulci_paths] from config over every path at load, and the S1/overlays.svg
+ * fixture's own sulci carry Inkscape's black/1px/butt styling, not this one.
  */
 
-export const SULCI_PATH_STYLE = "fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6";
+export const SULCI_PATH_STYLE = "fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round";
 
 const LABEL_STYLE = "font-family:Helvetica, sans-serif;font-size:14pt;font-style:italic;" +
                     "fill:white;fill-opacity:1;text-anchor:middle";

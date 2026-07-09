@@ -13,7 +13,7 @@
 - **No new adapter method.** `ViewerAdapter.REQUIRED` and `test/fake-adapter.js` are untouched. `test/adapter-contract.test.js` must keep passing unchanged.
 - **ROIs are untouched.** Closed bezier, enclosed-vertex membership, and the `pycortex-roidraw/vertexset-v2` JSON export all behave exactly as today. No format bump.
 - **Sulci carry no vertex membership** — no `left`, `right`, or `outline`. Only `bezier` + `labelVert`.
-- **Exported sulcus path style, copied verbatim from `cortex/defaults.cfg` `[sulci_paths]`:** `stroke = white`, `fill = none`, `stroke-width = 6`, `stroke-opacity = 0.6`. (There is **no** `stroke-linecap` in that section — do not add one.)
+- **Exported sulcus path style.** `cortex/defaults.cfg` `[sulci_paths]` has ten keys: `stroke = white`, `fill = none`, `display = inline`, `filter = url(#dropshadow)`, `stroke-width = 6`, `stroke-opacity = 0.6`, `fill-opacity = 0`, `stroke-dashoffset = None`, `stroke-dasharray = None`, `stroke-linecap = round`. We emit the five that carry visual meaning for a standalone open stroke: `fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round`. **`stroke-linecap:round` is required** — a sulcus is an open curve, so its end caps are visible, and it is the one `[sulci_paths]` key absent from `[rois_paths]`. We omit `display`/`filter` (a `filter` reference would dangle if the fragment is pasted somewhere without the `#dropshadow` def) and the `None`-valued dash keys (not valid CSS).
 - **Exported sulcus paths must not end with `Z`/`z`.** That is the single on-disk marker distinguishing a sulcus from an ROI in pycortex.
 - **Duplicate sulcus names are legal** and merge into one `<g inkscape:label="NAME">` on export, one `<path>` child per curve.
 - **Drawing stays flat-only.** `DrawModeMachine` is unchanged.
@@ -1015,7 +1015,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: nothing (fully pure; the caller injects geometry).
 - Produces:
-  - `SULCI_PATH_STYLE` — the verbatim `[sulci_paths]` style string
+  - `SULCI_PATH_STYLE` — the visually-meaningful subset of `[sulci_paths]`, incl. `stroke-linecap:round`
   - `escapeXml(s) -> string`
   - `exportSulciSvg(sulci, {pathFor, ptidxFor}) -> string`
 
@@ -1041,7 +1041,7 @@ test("escapeXml: escapes the five XML entities", () => {
 });
 
 test("SULCI_PATH_STYLE matches pycortex defaults.cfg [sulci_paths]", () => {
-    assert.strictEqual(SULCI_PATH_STYLE, "fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6");
+    assert.strictEqual(SULCI_PATH_STYLE, "fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round");
 });
 
 test("exportSulciSvg: emits a sulci layer with shapes and labels groups", () => {
@@ -1126,11 +1126,17 @@ Create `core/svg-export.js`:
  *  2. One named sulcus commonly holds SEVERAL <path> children — pycortex's own `CaS` has two,
  *     one per hemisphere. So same-named curves merge into a single group rather than colliding.
  *
- * Style is copied verbatim from cortex/defaults.cfg [sulci_paths]. (That section has no
- * stroke-linecap; don't add one.)
+ * Style: the visually-meaningful subset of cortex/defaults.cfg [sulci_paths]. stroke-linecap:round
+ * is REQUIRED -- a sulcus is an open curve, so its end caps show, and it is the one [sulci_paths]
+ * key that [rois_paths] lacks. We omit `display`/`filter` (a filter ref would dangle if this
+ * fragment is pasted where #dropshadow isn't defined) and the None-valued dash keys.
+ *
+ * Note this style governs raw/Inkscape rendering only: pycortex's own Overlay.set() re-applies
+ * [sulci_paths] from config over every path at load, and the fixture's on-disk style is whatever
+ * Inkscape happened to write (black, 1px, butt caps).
  */
 
-export const SULCI_PATH_STYLE = "fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6";
+export const SULCI_PATH_STYLE = "fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round";
 
 const LABEL_STYLE = "font-family:Helvetica, sans-serif;font-size:14pt;font-style:italic;" +
                     "fill:white;fill-opacity:1;text-anchor:middle";

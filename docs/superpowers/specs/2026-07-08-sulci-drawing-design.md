@@ -27,10 +27,19 @@ Established by reading `/Users/gallant/CLAUDE/PYCORTEX/pycortex-src`:
   fill = none            fill = none
   stroke-width = 2       stroke-width = 6
   stroke-opacity = 1     stroke-opacity = 0.6
+  fill-opacity = 0       fill-opacity = 0
+  (no linecap)           stroke-linecap = round
   ```
 
-  Both are `fill:none`. The substantive differences between an ROI path and a sulcus path are
-  the trailing `z`, the stroke width, and the stroke opacity.
+  (Abridged — each section has ten keys.) Both are `fill:none`. The substantive differences
+  between an ROI path and a sulcus path are the trailing `z`, the stroke width, the stroke
+  opacity, and `stroke-linecap: round` — which `[rois_paths]` lacks entirely. The linecap is not
+  incidental: a sulcus is an *open* stroke, so its end caps are visible geometry.
+
+  Note the style in the file itself is nearly irrelevant. `Overlay.set()` re-applies
+  `[sulci_paths]` from config over every path at load, and the `S1/overlays.svg` fixture's own
+  sulcus paths carry whatever Inkscape wrote (`stroke:#000000`, `1px`, `butt` caps). So the
+  on-disk style governs raw/Inkscape rendering only.
 - **Sulci carry no vertex data.** There is no `get_sulci_verts`. `get_roi_verts` →
   `svg.rois.get_mask(name)` → matplotlib point-in-*closed*-polygon, hard-coded to the `rois`
   layer. Sulci are consumed only by renderers (`quickflat.composite.add_sulci`, the WebGL
@@ -233,8 +242,8 @@ The SVG fragment groups sulci by `name`:
 <g inkscape:groupmode="layer" id="sulci" inkscape:label="sulci" style="display:inline">
   <g inkscape:groupmode="layer" id="sulci_shapes" inkscape:label="shapes">
     <g inkscape:groupmode="layer" inkscape:label="CS">
-      <path style="fill:none;stroke:#ffffff;stroke-width:6;stroke-opacity:0.6" d="M … C …"/>
-      <path style="fill:none;stroke:#ffffff;stroke-width:6;stroke-opacity:0.6" d="M … C …"/>
+      <path style="fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round" d="M … C …"/>
+      <path style="fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round" d="M … C …"/>
     </g>
   </g>
   <g inkscape:groupmode="layer" id="sulci_labels" inkscape:label="labels">

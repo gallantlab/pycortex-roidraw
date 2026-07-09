@@ -10,7 +10,7 @@
 import { PycortexAdapter, surfaceReady, findSurface } from "./adapter/pycortex-adapter.js";
 import { ShapeSet } from "./core/shape-model.js";
 import { DrawModeMachine } from "./core/draw-mode.js";
-import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel } from "./draw-pipeline.js";
+import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel, curveFromTrace } from "./draw-pipeline.js";
 import { LassoOverlay } from "./ui/lasso-overlay.js";
 import { BezierEditOverlay } from "./ui/bezier-edit-overlay.js";
 import { DrawPanel } from "./ui/draw-panel.js";
@@ -41,6 +41,7 @@ class ROIDrawer {
 
         this.overlay = new LassoOverlay(this.adapter, {
             onLasso: (pts) => this._finishLasso(pts),
+            onTrace: (pts) => this._finishTrace(pts),
             onInspect: (x, y) => this.adapter.inspectAt(x, y),
         });
         this.editOverlay = new BezierEditOverlay(this.adapter, {
@@ -49,10 +50,12 @@ class ROIDrawer {
         this.editingId = null;
         this.panel = new DrawPanel({
             onExport: () => this.exportJSON(),
+            onExportSulci: () => this.exportSulciSVG(),
             onImport: (file) => this._import(file),
             onClear: () => this.clear(),
             onRemove: (id) => this.remove(id),
             onEdit: (id) => this._editToggle(id),
+            onTool: (tool) => this._setTool(tool),
         });
         this.toggle = new ModeToggle({ onMode: (m) => this.setMode(m) });
 
@@ -126,11 +129,20 @@ class ROIDrawer {
         this.overlay.setActive(this._dm.lassoActive(this.adapter.isFlat(), this.editOverlay.isEditing()));
     }
 
+    // Which gesture a plain drag performs. Ending an in-flight edit first: the edit overlay owns
+    // the pointer while it is up, and the new tool's stroke would be swallowed by it.
+    _setTool(tool) {
+        if (this.editOverlay.isEditing()) this._editToggle(null);
+        this.overlay.setTool(tool);
+        this._renderStatus();
+    }
+
     _renderStatus() {
         if (this.mode !== "draw") return;   // the panel is hidden in Display mode
         if (!this.adapter.isFlat()) { this.panel.setStatus("Flattening…", "warn"); return; }
         if (this.editOverlay.isEditing()) this.panel.setStatus("Editing — drag ● to move · click an anchor, drag ○ to bend · double-click the line to add a point · double-click ● to toggle corner/smooth · select + Delete to remove · scroll to zoom · ✓ done when finished.", "draw");
-        else this.panel.setStatus("Lasso to draw · ✎ to edit a shape · scroll to zoom · Shift+drag to pan · Shift+click to inspect.", "draw");
+        else if (this.overlay.tool === "trace") this.panel.setStatus("Drag along the sulcus · ✎ to edit a curve · scroll to zoom · Shift+drag to pan · Shift+click to inspect.", "draw");
+        else this.panel.setStatus("Lasso to draw an ROI · ✎ to edit a shape · scroll to zoom · Shift+drag to pan · Shift+click to inspect.", "draw");
     }
 
     // --- drawing pipeline -------------------------------------------------------------
@@ -155,6 +167,22 @@ class ROIDrawer {
         this.panel.message('ROI "' + name + '": ' + sel.total + " vertices." + (sel.bezier ? " ✎ editable." : ""));
     }
 
+    _finishTrace(pts) {
+        // A sulcus is an OPEN curve with no vertex membership — pycortex stores none either. The
+        // fitted bezier is the whole datum, so there is nothing to re-derive and nothing that can
+        // fall out of sync with it.
+        const curve = curveFromTrace(this.adapter, pts);
+        if (!curve) { this.panel.message("Couldn't fit a curve — trace a longer stroke on the flatmap."); return; }
+
+        const fallback = "sulcus" + (this.shapes.byKind("sulcus").length + 1);
+        const entered = window.prompt("Sulcus name (reuse a name for the other hemisphere):", fallback);
+        if (entered === null) return;                 // Cancel
+        const name = entered.trim() || fallback;
+        this.shapes.add({ kind: "sulcus", name, bezier: curve.bezier, labelVert: curve.labelVert });
+        this._sync();
+        this.panel.message('Sulcus "' + name + '": ' + curve.bezier.anchors.length + " anchors. ✎ editable.");
+    }
+
     // --- editing ----------------------------------------------------------------------
 
     // Toggle shape editing. id => start editing that ROI's bezier; null => stop.
@@ -171,13 +199,16 @@ class ROIDrawer {
         this._renderStatus();
     }
 
-    // A drag-release from the edit overlay: store the new bezier and re-derive vertices from it.
+    // A drag-release from the edit overlay: store the new bezier. For an ROI, re-derive its vertex
+    // membership from the curve (the bezier is the source of truth). A sulcus HAS no membership.
     _applyEdit(bezier) {
-        const roi = this.shapes.shapes.find((r) => r.id === this.editingId);
-        if (!roi) return;
-        roi.bezier = bezier;
-        const d = roiFromBezier(this.adapter, bezier);
-        if (d && d.total) { roi.left = d.left; roi.right = d.right; roi.outline = d.outline; roi.labelVert = d.labelVert; }
+        const shape = this.shapes.shapes.find((s) => s.id === this.editingId);
+        if (!shape) return;
+        shape.bezier = bezier;
+        if (shape.kind === "roi") {
+            const d = roiFromBezier(this.adapter, bezier);
+            if (d && d.total) { shape.left = d.left; shape.right = d.right; shape.outline = d.outline; shape.labelVert = d.labelVert; }
+        }
         this.adapter.setOverlayLayer(LAYER, this.shapes.shapes);   // re-rasterize the smooth outline
         this.panel.renderList(this.shapes.shapes);                 // refresh the vertex count
     }
@@ -196,23 +227,41 @@ class ROIDrawer {
 
     // --- export / import --------------------------------------------------------------
 
-    exportJSON() {
-        if (!this.shapes.byKind("roi").length) { this.panel.message("Nothing to export."); return; }
-        let text;
-        try { text = JSON.stringify(this.shapes.toJSON(this.adapter.surfaceId()), null, 2); }
-        catch (e) { this.panel.message("Export failed: " + (e && e.message ? e.message : e)); return; }
-        const blob = new Blob([text], { type: "application/json" });
+    _download(text, filename, mime) {
+        const blob = new Blob([text], { type: mime });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = "rois.json";
+        a.download = filename;
         a.style.display = "none";
         document.body.appendChild(a);
         a.click();
         // Firefox writes a 0-byte file if the anchor is removed / the URL revoked before the
         // download starts — defer both well past the click instead of tearing down immediately.
         setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
-        this.panel.message("Exported " + this.shapes.byKind("roi").length + " ROI(s), " + text.length + " bytes, to rois.json.");
+    }
+
+    exportJSON() {
+        const rois = this.shapes.byKind("roi");
+        if (!rois.length) { this.panel.message("No ROIs to export."); return; }
+        let text;
+        try { text = JSON.stringify(this.shapes.toJSON(this.adapter.surfaceId()), null, 2); }
+        catch (e) { this.panel.message("Export failed: " + (e && e.message ? e.message : e)); return; }
+        this._download(text, "rois.json", "application/json");
+        this.panel.message("Exported " + rois.length + " ROI(s), " + text.length + " bytes, to rois.json.");
+    }
+
+    /* Sulci export as pycortex's OWN overlays.svg markup, not as a roidraw JSON format: paste or
+     * merge the fragment into the subject's overlays.svg and quickflat/WebGL/Inkscape read it. */
+    exportSulciSVG() {
+        const sulci = this.shapes.byKind("sulcus");
+        if (!sulci.length) { this.panel.message("No sulci to export."); return; }
+        let xml;
+        try { xml = this.adapter.exportSulciMarkup(sulci); }
+        catch (e) { this.panel.message("Export failed: " + (e && e.message ? e.message : e)); return; }
+        if (!xml) { this.panel.message("Export failed: the SVG overlay isn't loaded yet."); return; }
+        this._download(xml, "sulci.svg", "image/svg+xml");
+        this.panel.message("Exported " + sulci.length + " sulcus curve(s), " + xml.length + " bytes, to sulci.svg.");
     }
 
     _import(file) {
@@ -228,6 +277,8 @@ class ROIDrawer {
                 // back-fill an editable bezier for ROIs saved before this feature (v1 files), so
                 // imported shapes can be edited just like freshly drawn ones.
                 let fitted = 0;
+                // Imported documents are vertexset-v2, which is an ROI format — every entry is an
+                // ROI. Sulci import is not supported (export is one-way; see the design spec).
                 for (const roi of added) {
                     // back-fill a label vertex (same centroid-nearest rule as freshly drawn ROIs)
                     if (!roi.labelVert && roi.outline) {

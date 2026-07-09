@@ -27,12 +27,24 @@ prints the seed and reproduces deterministically):
 The example-based core tests (`geom`, `selection`, `bezier`, `transform`, `shape-model`, `outline`,
 `uv-membership`) remain as targeted cases.
 
-### Sulcus SVG export — unit (pure writer)
-`core/svg-export.js` (`test/svg-export.test.js`) is the pure writer for the `overlays.svg`-compatible
-sulci fragment. It guarantees: a sulcus path never closes with a trailing `Z` (the only on-disk
-marker separating a sulcus from an ROI); curves that share a name merge into a single
-`<g inkscape:label="…">` rather than colliding, exactly as pycortex's own multi-hemisphere `CaS`
-does; and names are XML-escaped before landing in an attribute or a text node.
+### Sulcus SVG export — unit (pure writer) + a real XML parser
+`core/svg-export.js` is the pure writer for the sulci layer of an `overlays.svg`.
+
+`test/svg-export.test.js` pins the writer's decisions by string: a sulcus path never closes with a
+trailing `Z` (the only on-disk marker separating a sulcus from an ROI); curves that share a name
+merge into a single `<g inkscape:label="…">` rather than colliding, exactly as pycortex's own
+multi-hemisphere `CaS` does; names are XML-escaped; the labels layer exists and holds no `<text>`.
+
+**String tests were not enough, and had already shipped a broken file.** Every assertion above
+passes against a bare fragment that uses the `inkscape:` prefix with no namespace declaration —
+which no XML parser will open. So `test/test_sulci_svg.py` generates the writer's real output with
+node and parses it with Python's ElementTree, using `cortex/svgoverlay.py`'s own namespaces and
+`findall` queries. It asserts the document parses, that `_find_layer` locates the `sulci` layer and
+both its sublayers, that same-named curves round-trip through the parser as one group of two paths,
+that no `d` closes, and that the labels layer holds no `<text>` — because `Labels.__init__` reads
+`float(text.get('x'))` off every `<text>` it finds, so a label carrying only a vertex index makes
+`db.get_overlay(subject)` raise `TypeError`. It needs neither pycortex nor a subject, so it runs in
+CI. It is the closest thing to the round-trip below that can be automated here.
 
 ### Draw-mode state machine — unit (the flat-only latch)
 `core/draw-mode.js` (`test/draw-mode.test.js`) is the extracted pure state machine behind Draw mode.
@@ -57,13 +69,21 @@ assert real properties rather than tautologies — no browser, no pycortex:
   `data-ptidx` at the original midpoint.
 
 ### Edit-op index guards — unit
-`moveAnchor`/`moveHandle` (`test/bezier.test.js`) refuse an out-of-range anchor index. The edit
-overlay holds a drag target across pointer events, so an anchor list that shrinks under it (Delete
-pressed mid-drag) leaves a stale index behind; writing through one used to append past the end of
-the handle arrays, silently desynchronizing their lengths from `anchors`. The overlay separately
-drops its drag and hover targets whenever the anchor count changes, which is the only place that can
-catch the other half of that bug — a stale index that is still *in range* names a different anchor,
-and no pure function can tell.
+All five edit ops (`moveAnchor`, `moveHandle`, `setAnchorSmooth`, `splitSegment`, `deleteAnchor`)
+share one contract, pinned in `test/bezier.test.js`: an out-of-range anchor or segment index is a
+no-op returning an unchanged copy. Nothing throws, nothing half-applies, and the four parallel
+arrays keep the same length.
+
+The edit overlay holds drag, hover, and selection targets across pointer events, so an anchor list
+that shrinks under one (Delete pressed mid-drag) leaves a stale index behind. Writing through it
+used to append past the end of the handle arrays, silently desynchronizing their lengths from
+`anchors`. The ops used to *disagree* about this — two refused, two threw a `TypeError`, and
+`setAnchorSmooth` on a closed curve grew `smooth[]` past `anchors[]` with holes in it — which meant
+each caller had to know which op it was calling. The test now sweeps every op × every bad index.
+
+The overlay separately drops its drag and hover targets whenever the anchor count changes, which is
+the only place that can catch the other half of that bug — a stale index that is still *in range*
+names a different anchor, and no pure function can tell.
 
 ### Edit-overlay hit-testing — unit (pure helpers)
 `ui/overlay-geom.js` (`test/overlay-geom.test.js`) holds the grab-an-anchor / grab-a-handle math the
@@ -109,28 +129,38 @@ Closed by that check, against a real pycortex viewer:
   `setOverlayLayer` produced 8 `<path>` elements (halo + stroke per shape): the 6 sulcal ones carry
   no trailing `Z`, the 2 ROI ones do.
 - `exportSulciMarkup` on the live overlay: 3 paths, none closing; two same-named `CS` curves merged
-  into one `<g inkscape:label="CS">` with a `<path>` each; a hostile name XML-escaped in both the
-  attribute and the text node; style exactly
-  `fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round`.
+  into one `<g inkscape:label="CS">` with a `<path>` each; a hostile name XML-escaped; style exactly
+  `fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round`. (That run predates
+  the export rewrite: it saw the old bare fragment, `<text data-ptidx>` labels and all. Re-run it.)
 - No sulcus leaks into the `vertexset-v2` JSON, and its `format` string is unchanged.
 
-### Nothing roidraw writes has ever been read back outside these tests
+### What roidraw writes, and how far it has been read back
 
 Worth stating plainly, because it is easy to mistake the property tests for end-to-end coverage.
-The two export formats have *different* gaps:
+The two export formats have *different* gaps.
 
-- **`sulci.svg` has a foreign consumer that has never been asked.** The whole point of matching
-  pycortex's format is that `cortex/svgoverlay.py`, `quickflat`, the WebGL viewer, and Inkscape read
-  it. None of them ever has. Merging a fragment into a real subject's `overlays.svg`, confirming
-  `db.get_overlay()` parses it, and rendering with `quickflat` is the check that would substantiate
-  the claim this feature is built on. It needs a subject and an importable `cortex`.
-- **`rois.json` has no foreign consumer at all.** `pycortex-roidraw/vertexset-v2` is a roidraw-native
-  format; no Python reader exists here or in pycortex, deliberately (`get_roi_masks` does not read
-  it). So "read it back" can only mean re-importing into roidraw. The **format** round-trip is
-  strong — `test/properties.test.js` runs `toJSON` → `JSON.stringify` → `JSON.parse` → `loadJSON`
-  over 300 seeded trials and compares vertices, outline, label, and bezier. But the README's
-  "re-imports in any viewer on the same surface" has never been demonstrated across two viewers or
-  against real surface data.
+**`sulci.svg` has a foreign consumer.** The whole point of matching pycortex's format is that
+`cortex/svgoverlay.py`, `quickflat`, the WebGL viewer, and Inkscape read it.
+
+- *Covered:* `test/test_sulci_svg.py` parses the real output with an XML parser and reproduces
+  `svgoverlay.py`'s layer/shape/label queries against it (see above). This closed three defects that
+  the string-matching tests could not see: an undeclared `inkscape:` namespace prefix (nothing would
+  parse the file), `<text data-ptidx>` labels with no `x`/`y` (`db.get_overlay()` raised `TypeError`
+  on them), and the absence of the mandatory-but-empty `labels` layer.
+- *Still open:* `svgoverlay.py` itself has never run on it. Merging the shape groups into a real
+  subject's `overlays.svg`, confirming `db.get_overlay()` exposes them under `svg.sulci`, and
+  rendering with `quickflat.make_figure(…, with_sulci=True)` needs a subject and an importable
+  `cortex` — neither is available here.
+
+**`rois.json` has no foreign consumer at all.** `pycortex-roidraw/vertexset-v2` is a roidraw-native
+format; no Python reader exists here or in pycortex, deliberately (`get_roi_masks` does not read
+it). So "read it back" can only mean re-importing into roidraw. The **format** round-trip is
+strong — `test/properties.test.js` runs `toJSON` → `JSON.stringify` → `JSON.parse` → `loadJSON`
+over 300 seeded trials and compares vertices, outline, label, and bezier — and `loadJSON`'s deep
+copy is pinned in `test/shape-model.test.js` (an imported bezier is mutated in place by the edit
+overlay; aliasing the parsed document would let an edit reach back into it). But the README's
+"re-imports in any viewer on the same surface" has never been demonstrated across two viewers or
+against real surface data.
 
 Still open, in both directions:
 

@@ -137,3 +137,73 @@ test("loadJSON: tags imported entries as ROIs", () => {
     assert.strictEqual(added.length, 1);
     assert.strictEqual(added[0].kind, "roi");
 });
+
+/*
+ * loadJSON must DEEP copy: an imported shape's bezier is mutated in place by the edit overlay, and
+ * `outline` entries by nothing today but the model owns them either way. Aliasing the caller's
+ * parsed JSON would let an edit reach back into the document the user imported.
+ */
+test("loadJSON: the model never aliases the parsed document", () => {
+    const doc = {
+        format: FORMAT,
+        rois: [{
+            name: "V1",
+            vertices: { left: [1, 2], right: [3] },
+            outline: [{ h: "left", g: 1 }, { h: "left", g: 2 }, { h: "left", g: 3 }],
+            labelVert: { h: "left", g: 2 },
+            bezier: {
+                closed: true,
+                anchors: [[0, 0], [1, 0], [1, 1]],
+                inHandles: [[0, 0], [1, 0], [1, 1]],
+                outHandles: [[0, 0], [1, 0], [1, 1]],
+                smooth: [true, true, false],
+            },
+        }],
+    };
+    const src = doc.rois[0];
+    const [roi] = new ShapeSet().loadJSON(doc);
+
+    assert.notStrictEqual(roi.bezier, src.bezier);
+    assert.notStrictEqual(roi.bezier.anchors, src.bezier.anchors);
+    assert.notStrictEqual(roi.bezier.anchors[0], src.bezier.anchors[0]);
+    assert.notStrictEqual(roi.bezier.smooth, src.bezier.smooth);
+    assert.notStrictEqual(roi.outline, src.outline);
+    assert.notStrictEqual(roi.outline[0], src.outline[0]);
+    assert.notStrictEqual(roi.labelVert, src.labelVert);
+    assert.notStrictEqual(roi.left, src.vertices.left);
+
+    // ...and the copy is faithful, not merely detached.
+    assert.deepStrictEqual(roi.bezier, src.bezier);
+    assert.deepStrictEqual(roi.outline, src.outline);
+    assert.deepStrictEqual(roi.labelVert, src.labelVert);
+
+    // Mutating the model leaves the document untouched.
+    roi.bezier.anchors[0][0] = 99;
+    roi.outline[0].g = 99;
+    assert.strictEqual(doc.rois[0].bezier.anchors[0][0], 0);
+    assert.strictEqual(doc.rois[0].outline[0].g, 1);
+});
+
+test("loadJSON: a v1 bezier (no `closed`, no `smooth`) keeps its absent keys for cloneBezier", () => {
+    const doc = { format: FORMAT, rois: [{ name: "V1", vertices: { left: [], right: [] },
+        bezier: { anchors: [[0, 0]], inHandles: [[0, 0]], outHandles: [[0, 0]] } }] };
+    const [roi] = new ShapeSet().loadJSON(doc);
+    assert.strictEqual("closed" in roi.bezier, false, "absent means closed; don't invent the key");
+    assert.strictEqual("smooth" in roi.bezier, false, "cloneBezier back-fills this as all-smooth");
+});
+
+test("loadJSON: a garbage bezier field becomes null rather than a half-copied object", () => {
+    for (const bad of [42, "nope", {}, { anchors: "no" }, []]) {
+        const doc = { format: FORMAT, rois: [{ name: "V1", vertices: { left: [], right: [] }, bezier: bad }] };
+        const [roi] = new ShapeSet().loadJSON(doc);
+        assert.strictEqual(roi.bezier, null, "unusable bezier: " + JSON.stringify(bad));
+    }
+});
+
+test("add: an ROI always has membership arrays, even when the caller omits them", () => {
+    const roi = new ShapeSet().add({ kind: "roi", name: "V1" });
+    assert.deepStrictEqual(roi.left, []);          // callers read roi.left.length unguarded
+    assert.deepStrictEqual(roi.right, []);
+    const sulcus = new ShapeSet().add({ kind: "sulcus", name: "CS" });
+    assert.strictEqual("left" in sulcus, false, "a sulcus has no membership, not empty membership");
+});

@@ -21,8 +21,8 @@
  *
  * The vertexset-v2 document is an ROI format only: it describes per-hemisphere vertex membership,
  * which a sulcus does not have. toJSON therefore serializes ROIs only, and loadJSON tags every
- * imported entry kind:"roi" (a vertexset document only ever holds ROIs). Sulci get their own
- * export path in a later task.
+ * imported entry kind:"roi" (a vertexset document only ever holds ROIs). Sulci are exported
+ * separately, as pycortex's own overlays.svg markup — see core/svg-export.js.
  */
 
 export const FORMAT = "pycortex-roidraw/vertexset-v2";
@@ -44,8 +44,10 @@ export class ShapeSet {
     /* An ROI carries membership (left/right/outline); a sulcus carries only its open bezier and a
      * label vertex. Vertex fields are omitted entirely for sulci rather than set to empty arrays,
      * so a downstream reader can't mistake "no membership" for "membership of nothing". */
-    add({ kind = "roi", name, color, left, right, outline = null, labelVert = null, bezier = null }) {
+    add({ kind = "roi", name, color, left = [], right = [], outline = null, labelVert = null, bezier = null }) {
         const shape = { id: this.nextId++, kind, name, color: color || this.nextColor(), labelVert, bezier };
+        // An ROI always HAS the membership fields (possibly empty); a sulcus never does. Callers
+        // read `roi.left.length` unguarded, so default them rather than let `undefined` through.
         if (kind === "roi") { shape.left = left; shape.right = right; shape.outline = outline; }
         this.shapes.push(shape);
         return shape;
@@ -78,9 +80,10 @@ export class ShapeSet {
 
     /* Append ROIs from a parsed document. A vertexset document only ever holds ROIs, so every
      * entry is tagged kind:"roi". Returns the shapes added. Throws on an unknown format.
-     * Purely structural: arrays are defensively copied so the model never aliases the caller's
-     * parsed JSON, and a missing labelVert is left null (the viewer back-fills it from geometry —
-     * see draw-pipeline.backfillLabel — so reloaded ROIs label the same way freshly drawn ones do). */
+     * Purely structural, and DEEPLY copied: the model never aliases the caller's parsed JSON, so a
+     * later edit (which mutates a shape's bezier in place) can't reach back into it. A missing
+     * labelVert is left null — the viewer back-fills it from geometry (see draw-pipeline's
+     * backfillLabel), so reloaded ROIs label the same way freshly drawn ones do. */
     loadJSON(doc) {
         if (!doc || !doc.format || !String(doc.format).startsWith("pycortex-roidraw"))
             throw new Error("unrecognized format: " + (doc && doc.format));
@@ -92,11 +95,31 @@ export class ShapeSet {
                 name: r.name || ("roi" + this.nextId),
                 color: r.color,
                 left: (v.left || []).slice(), right: (v.right || []).slice(),
-                outline: r.outline ? r.outline.slice() : null,
-                labelVert: r.labelVert || null,
-                bezier: r.bezier || null,
+                outline: copyRing(r.outline),
+                labelVert: copyVert(r.labelVert),
+                bezier: copyBezier(r.bezier),
             }));
         }
         return added;
     }
+}
+
+/* --- deep copies of the three structured fields a vertexset document carries ------------------ */
+
+const copyVert = (o) => (o ? { h: o.h, g: o.g } : null);
+const copyRing = (ring) => (Array.isArray(ring) ? ring.map(copyVert) : null);
+const copyPts = (pts) => (Array.isArray(pts) ? pts.map((p) => [p[0], p[1]]) : []);
+
+/* Copy a bezier descriptor verbatim (including a `closed` flag or `smooth[]` an older file lacks —
+ * cloneBezier back-fills those on the first edit). Returns null for anything that isn't one. */
+function copyBezier(bez) {
+    if (!bez || !Array.isArray(bez.anchors)) return null;
+    const out = {
+        anchors: copyPts(bez.anchors),
+        inHandles: copyPts(bez.inHandles),
+        outHandles: copyPts(bez.outHandles),
+    };
+    if (bez.closed !== undefined) out.closed = !!bez.closed;
+    if (Array.isArray(bez.smooth)) out.smooth = bez.smooth.map(Boolean);
+    return out;
 }

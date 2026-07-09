@@ -18,8 +18,10 @@ import { simplifyRDP, centroid } from "./geom.js";
 // PIXEL_RDP_EPSILON in *pixel* units (~1000× this); the two live in different coordinate spaces.
 const UV_RDP_EPSILON = 0.004;
 
-/* True unless explicitly opened. A bezier from an older file has no `closed` key. */
-export function isClosed(bez) { return !bez || bez.closed !== false; }
+/* True unless explicitly opened. A bezier from an older file has no `closed` key, so a missing
+ * flag means closed. An ABSENT bezier is not a closed one — it has no shape at all — so callers
+ * that dispatch on this (evalBezier, nearestOnBezier) still see the "nothing to do" branch. */
+export function isClosed(bez) { return !!bez && bez.closed !== false; }
 
 /* Number of cubic segments: a closed ring wraps (n), an open curve does not (n-1). */
 export function segCount(bez) {
@@ -214,11 +216,20 @@ export function cloneBezier(bez) {
     };
 }
 
-/* Is `i` a live anchor index? The edit overlay carries a drag target across pointer events, so an
- * anchor list that shrinks under it (Delete pressed mid-drag) leaves a stale index behind. Writing
- * through one used to append past the end of the handle arrays, silently desynchronizing their
- * lengths from `anchors`. The move ops below refuse instead. */
+/* Is `i` a live anchor index? The edit overlay carries a drag/hover target across pointer events,
+ * so an anchor list that shrinks under it (Delete pressed mid-drag) leaves a stale index behind.
+ * Writing through one used to append past the end of the handle arrays, silently desynchronizing
+ * their lengths from `anchors`.
+ *
+ * ALL FIVE edit ops below share one contract: an out-of-range index is a no-op that returns an
+ * unchanged copy. Nothing throws, nothing half-applies. (They used to disagree — two refused, two
+ * threw a TypeError, one silently corrupted the smooth[] array — which meant the caller's guard
+ * had to know which op it was calling.) */
 const inRange = (bez, i) => Number.isInteger(i) && i >= 0 && i < bez.anchors.length;
+
+/* Is `seg` a live segment index? A closed ring has n segments (the last wraps); an open curve has
+ * n-1 — asking for its nonexistent wrap segment must not reach into anchors[n]. */
+const segInRange = (bez, seg) => Number.isInteger(seg) && seg >= 0 && seg < segCount(bez);
 
 /* Move anchor i to `pos`, carrying its two handles by the same delta (the local shape is rigid —
  * standard vector-editor behavior, so a smooth anchor stays smooth when you slide it).
@@ -248,9 +259,11 @@ export function moveHandle(bez, i, which, pos) {
 }
 
 /* Set anchor i smooth or corner. An OPEN curve's endpoints have no prev/next pair to build a
- * symmetric tangent from, so they are permanently corners: forcing them smooth is a no-op. */
+ * symmetric tangent from, so they are permanently corners: forcing them smooth is a no-op.
+ * An out-of-range i returns the bezier unchanged. */
 export function setAnchorSmooth(bez, i, smooth) {
     const b = cloneBezier(bez);
+    if (!inRange(b, i)) return b;
     const n = b.anchors.length;
     const endpoint = !isClosed(b) && (i === 0 || i === n - 1);
     b.smooth[i] = endpoint ? false : !!smooth;
@@ -269,9 +282,11 @@ export function setAnchorSmooth(bez, i, smooth) {
 }
 
 /* Insert an anchor on segment `seg` at parameter t in (0,1), splitting the cubic with de Casteljau
- * so the curve shape is UNCHANGED. For an open curve `seg` must be in [0, n-2]. */
+ * so the curve shape is UNCHANGED. `seg` is in [0, n-1] on a closed ring and [0, n-2] on an open
+ * curve (which has no wrap segment); out of range returns the bezier unchanged. */
 export function splitSegment(bez, seg, t) {
     const b = cloneBezier(bez);
+    if (!segInRange(b, seg)) return b;
     const n = b.anchors.length;
     const j = isClosed(b) ? (seg + 1) % n : seg + 1;
     const p0 = b.anchors[seg], p1 = b.outHandles[seg], p2 = b.inHandles[j], p3 = b.anchors[j];
@@ -302,13 +317,15 @@ function normalizeOpenEndpoints(b) {
 }
 
 /* Remove anchor i. A closed bezier needs 3 anchors; an open one needs only 2. Returns the input
- * unchanged at the floor. Neighboring handles are left as-is, so the curve reconnects through them.
- * On an open curve, removing anchor 0 or n-1 can promote a former interior anchor to an endpoint;
- * normalizeOpenEndpoints re-pins both endpoints so the corner/degenerate-handle invariant holds. */
+ * unchanged at the floor, or when i is out of range. Neighboring handles are left as-is, so the
+ * curve reconnects through them. On an open curve, removing anchor 0 or n-1 can promote a former
+ * interior anchor to an endpoint; normalizeOpenEndpoints re-pins both endpoints so the
+ * corner/degenerate-handle invariant holds. */
 export function deleteAnchor(bez, i) {
     const floor = isClosed(bez) ? 3 : 2;
     if (bez.anchors.length <= floor) return bez;
     const b = cloneBezier(bez);
+    if (!inRange(b, i)) return b;
     b.anchors.splice(i, 1);
     b.inHandles.splice(i, 1);
     b.outHandles.splice(i, 1);

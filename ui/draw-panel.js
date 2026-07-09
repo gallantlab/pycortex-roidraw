@@ -1,13 +1,30 @@
 /*
- * draw-panel.js — the ROI control panel (status, Draw toggle, ROI list, export/import/clear,
- * message line). Host-agnostic; built from DOM nodes (names go through textContent, so an ROI
+ * draw-panel.js — the drawing control panel (status, kind selector, shape list, export/import/clear,
+ * message line). Host-agnostic; built from DOM nodes (names go through textContent, so a shape
  * named with HTML can't inject). Styling is in roidraw.css.
  */
+
+/* A panel button that fires `on` when clicked. Every button here is type="button" so it can't
+ * submit a surrounding form the host may have wrapped the page in. */
+function button(label, on, className) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    if (className) b.className = className;
+    b.onclick = () => on();
+    return b;
+}
+
 export class DrawPanel {
+    // Every callback is normalized to a no-op once, here, so no call site has to guard.
     constructor({ onExport, onExportSulci, onImport, onClear, onRemove, onEdit, onTool } = {}) {
         this.onRemove = onRemove || (() => {});
         this.onEdit = onEdit || (() => {});
         this.onTool = onTool || (() => {});
+        const exportRois = onExport || (() => {});
+        const exportSulci = onExportSulci || (() => {});
+        const importFile = onImport || (() => {});
+        const clearAll = onClear || (() => {});
         this._editingId = null;
 
         const el = document.createElement("div");
@@ -25,12 +42,8 @@ export class DrawPanel {
         tools.setAttribute("aria-label", "shape kind");
         this._toolBtns = {};
         for (const [tool, label] of [["lasso", "ROI"], ["trace", "Sulcus"]]) {
-            const b = document.createElement("button");
-            b.type = "button";
-            b.className = "roidraw-tools__btn";
-            b.textContent = label;
+            const b = button(label, () => this.setTool(tool), "roidraw-tools__btn");
             b.setAttribute("aria-pressed", String(tool === this.tool));
-            b.onclick = () => this.setTool(tool);
             this._toolBtns[tool] = b;
             tools.appendChild(b);
         }
@@ -41,30 +54,18 @@ export class DrawPanel {
         el.appendChild(this.statusEl);
 
         // big, obvious "finish editing" control — shown only while a shape is being edited
-        this.doneEl = document.createElement("button");
-        this.doneEl.type = "button";
-        this.doneEl.className = "roidraw-done";
-        this.doneEl.textContent = "✓ Done editing";
+        this.doneEl = button("✓ Done editing", () => this.onEdit(null), "roidraw-done");
         this.doneEl.style.display = "none";
-        this.doneEl.onclick = () => this.onEdit(null);
         el.appendChild(this.doneEl);
 
         this.listEl = document.createElement("div");
         this.listEl.className = "roidraw-list";
         el.appendChild(this.listEl);
 
-        const exp = document.createElement("button");
-        exp.type = "button";
-        exp.textContent = "Export ROIs (JSON)";
-        exp.onclick = () => onExport && onExport();
-        el.appendChild(exp);
+        el.appendChild(button("Export ROIs (JSON)", exportRois));
+        el.appendChild(button("Export sulci (SVG)", exportSulci));
 
-        const expS = document.createElement("button");
-        expS.type = "button";
-        expS.textContent = "Export sulci (SVG)";
-        expS.onclick = () => onExportSulci && onExportSulci();
-        el.appendChild(expS);
-
+        // Import reads the ROI JSON only. Sulci export is one-way, into pycortex's own overlays.svg.
         const lab = document.createElement("label");
         lab.textContent = "Import: ";
         const inp = document.createElement("input");
@@ -72,18 +73,14 @@ export class DrawPanel {
         inp.accept = "application/json";
         inp.onchange = (e) => {
             const f = e.target.files && e.target.files[0];
-            if (f && onImport) onImport(f);
+            if (f) importFile(f);
             e.target.value = "";
             e.target.blur();   // don't keep keyboard focus on the file input (Shift-to-pan needs body focus)
         };
         lab.appendChild(inp);
         el.appendChild(lab);
 
-        const clr = document.createElement("button");
-        clr.type = "button";
-        clr.textContent = "Clear all";
-        clr.onclick = () => onClear && onClear();
-        el.appendChild(clr);
+        el.appendChild(button("Clear all", clearAll));
 
         this.msgEl = document.createElement("div");
         this.msgEl.className = "roidraw-msg";
@@ -175,24 +172,18 @@ export class DrawPanel {
             ct.title = sulcus ? "anchors" : "vertices";
             row.appendChild(ct);
 
-            // edit toggle — a real button (bigger hit target); only shapes with a bezier can edit
-            const edit = document.createElement("button");
-            edit.type = "button";
-            edit.className = "roidraw-roi__editbtn" + (editing ? " roidraw-roi__editbtn--on" : "");
-            edit.textContent = editing ? "editing" : "✎ edit";
+            // edit toggle — a real button (bigger hit target); only shapes with a bezier can edit.
+            // The controller re-checks the bezier: a disabled button is a UI courtesy, not a guard.
+            const edit = button(editing ? "editing" : "✎ edit", () => this.onEdit(editing ? null : s.id),
+                "roidraw-roi__editbtn" + (editing ? " roidraw-roi__editbtn--on" : ""));
             edit.title = s.bezier ? (editing ? "finish editing" : "edit shape") : "no editable curve";
             edit.disabled = !s.bezier;
-            edit.onclick = (e) => { e.preventDefault(); if (s.bezier) this.onEdit(editing ? null : s.id); };
             row.appendChild(edit);
 
             // a real <button> (keyboard-focusable + activatable), not an href-less <a>
-            const del = document.createElement("button");
-            del.type = "button";
-            del.className = "roidraw-roi__del";
-            del.textContent = "✕";
+            const del = button("✕", () => this.onRemove(s.id), "roidraw-roi__del");
             del.title = "remove";
             del.setAttribute("aria-label", "remove " + (sulcus ? "sulcus " : "ROI ") + s.name);
-            del.onclick = (e) => { e.preventDefault(); this.onRemove(s.id); };
             row.appendChild(del);
 
             list.appendChild(row);

@@ -10,7 +10,7 @@
     "test": "npm run test:js && npm run test:py",
     "pretest:js": "npm run build",
     "test:js": "node --test test/*.test.js",
-    "test:py": "python3 test/test_bake.py && python3 test/test_fixups.py && python3 test/test_add_help.py && python3 test/test_reengine.py && python3 test/test_convert_huth.py"
+    "test:py": "python3 test/test_bake.py && python3 test/test_fixups.py && python3 test/test_add_help.py && python3 test/test_reengine.py && python3 test/test_convert_huth.py && python3 test/test_sulci_svg.py"
   },
   "devDependencies": {
     "esbuild": "^0.24.0"

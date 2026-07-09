@@ -41,12 +41,29 @@ those must not bounce the user out of Draw — but a genuine inflate *after* rea
 logic is now provable in isolation instead of only eyeballed in a browser.
 
 ### Draw pipeline — headless against a synthetic surface
-`draw-pipeline.js` (`test/draw-pipeline.test.js`) is the lasso → select → fit → re-derive pipeline,
-driven against `test/fake-adapter.js` (a `ViewerAdapter` over a known grid). The fake projects uv→px
-through a real rotation+offset (not `px == uv·scale`) and puts the two hemispheres in disjoint uv
-bands, so the px→uv round-trip and hemisphere separation are actually exercised. Because the grid's
-geometry is analytic, the tests assert the pipeline selects exactly the enclosed vertices, fits an
-editable bezier, and re-derives identical membership — no browser, no pycortex.
+`draw-pipeline.js` (`test/draw-pipeline.test.js`) is driven against `test/fake-adapter.js` (a
+`ViewerAdapter` over a known grid). The fake projects uv→px through a real rotation+offset (not
+`px == uv·scale`) and puts the two hemispheres in disjoint uv bands, so the px→uv round-trip and
+hemisphere separation are actually exercised. Because the grid's geometry is analytic, the tests
+assert real properties rather than tautologies — no browser, no pycortex:
+
+- the **ROI** path (lasso → select → fit → re-derive) selects exactly the enclosed vertices, fits an
+  editable bezier, and re-derives identical membership;
+- the **sulcus** path (`curveFromTrace`) round-trips a stroke px→uv through the fitted homography
+  back onto the uv points it was drawn through, and returns `null` on a degenerate stroke or a
+  collinear/unfittable view;
+- `labelForCurve` picks the vertex nearest the curve's midpoint, and picks a *different* vertex for
+  a translated curve — the guard that a reshaped sulcus relabels instead of stranding its
+  `data-ptidx` at the original midpoint.
+
+### Edit-op index guards — unit
+`moveAnchor`/`moveHandle` (`test/bezier.test.js`) refuse an out-of-range anchor index. The edit
+overlay holds a drag target across pointer events, so an anchor list that shrinks under it (Delete
+pressed mid-drag) leaves a stale index behind; writing through one used to append past the end of
+the handle arrays, silently desynchronizing their lengths from `anchors`. The overlay separately
+drops its drag and hover targets whenever the anchor count changes, which is the only place that can
+catch the other half of that bug — a stale index that is still *in range* names a different anchor,
+and no pure function can tell.
 
 ### Edit-overlay hit-testing — unit (pure helpers)
 `ui/overlay-geom.js` (`test/overlay-geom.test.js`) holds the grab-an-anchor / grab-a-handle math the

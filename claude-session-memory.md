@@ -76,6 +76,25 @@ string the author meant to write. That is exactly why all three bugs shipped. On
   `fitHomography` checks `dst` too. `roi` → `shape` throughout the edit overlay.
 - **Every new test was mutation-checked**: reverted each fix, confirmed the test fails.
 
+### Published — v0.4.1 released, demo re-baked (same session)
+
+Ordering per the usual rule: release first (the asset IS the distribution; `dist/` is gitignored),
+then bake the demo **from the downloaded asset** so `demo == release` is demonstrated, not assumed.
+
+- **`v0.4.1`** tagged + released. Asset `roidraw.bundle.js`, **117,752 B**,
+  sha256 `65583ef60357f0e4851a1f640dd4bfcd85af54acc280ea1a766b5151775b6d40`.
+  `/releases/latest` verified to resolve to it, and the downloaded asset is byte-identical to the
+  locally built + tested bundle.
+- Also synced `package-lock.json`'s root version, stale at `0.3.0` since `b8d503f`. `npm ci` still OK.
+- **Demo re-baked**: `gallantlab/viewer-stories-group-roidraw` @ `a554d90d2a`. `viewer.html` already
+  carried the two `<script>` tags, so this was a one-file swap — done via the GitHub contents API
+  (PUT with the old blob sha), **no clone**: the repo is ~200 MB and the previous session's clone was
+  1.5 GB. The old blob was confirmed to be exactly the v0.4.0 asset (`29c71e99…`) first.
+- Live check: `https://gallantlab.org/viewer-stories-group-roidraw/roidraw.bundle.js` serves the
+  v0.4.1 asset byte for byte, and the served bundle emits `xmlns:inkscape` with a self-closing,
+  empty `sulci_labels` layer and no `<text>`. **Note `raw.githubusercontent.com` served a stale CDN
+  copy for minutes afterwards** — check the contents API or Pages, not raw, when verifying a push.
+
 ### Open / next time
 
 - **Unchanged and still the top gap:** `svgoverlay.py` itself has never run on roidraw's output.
@@ -83,11 +102,12 @@ string the author meant to write. That is exactly why all three bugs shipped. On
   as close as CI can get here.
 - The browser `_import` (`FileReader`) and `_download` (`Blob`/anchor/`revokeObjectURL`) paths still
   have zero coverage; the 4 s teardown exists for Firefox and is untested.
-- **The 2026-07-09 CDP live-viewer check predates this rewrite** — it validated the old broken
-  markup. Re-run it before the next release.
-- **A new release is needed**: `dist/` is gitignored, so `/releases/latest` still serves the v0.4.0
-  bundle with the broken exporter. Cut v0.4.1, then re-bake the demo viewer (see
-  [[roidraw-release-artifact-ordering]]). pycortex docs PR #656 is still OPEN.
+- **The 2026-07-09 CDP live-viewer check predates the export rewrite** — it validated the old broken
+  markup, and was NOT re-run before v0.4.1. The bundle is statically verified (the exporter is pure
+  and parser-tested); what remains unexercised in a browser is the adapter wiring + the download.
+- **pycortex docs PR #656 is still OPEN.** Its prose describes the *old* merge instructions ("paste
+  or merge the fragment"), which is now known to be a data-loss footgun — a second
+  `inkscape:label="sulci"` layer replaces the subject's own. Fix that PR before merging.
 - Lesson recorded in memory as `string-tests-cannot-check-a-format`.
 
 ## 2026-07-08/09 — Sulcus drawing (v0.4.0): spec → plan → 12 TDD tasks → SHIPPED (release + demo + docs PR)

@@ -53,27 +53,39 @@ Open the viewer, switch to **Draw** mode.
    (same name as the first sulcus). Confirm the panel shows **two** rows named `CS` and no error is
    raised. *(Verified: two same-named sulci coexist in the model and merge on export.)*
 
-8. ✅ **Export sulci (SVG).** Click **Export sulci (SVG)**. Confirm it downloads `sulci.svg`
-   containing exactly one `<g inkscape:label="CS">` group, with **two** `<path>` elements inside it
-   (one per hemisphere), and that no path's `d` attribute ends in `Z`. Check mechanically:
+8. ⬜ **Export sulci (SVG).** Click **Export sulci (SVG)**. Confirm it downloads `sulci.svg`, and
+   check it mechanically — this is the whole file's structure in one command:
 
    ```bash
-   grep -o 'd="[^"]*"' ~/Downloads/sulci.svg | grep -c 'Z"'
+   python3 -c '
+   import xml.etree.ElementTree as ET
+   S, I = "http://www.w3.org/2000/svg", "http://www.inkscape.org/namespaces/inkscape"
+   r = ET.parse("'"$HOME"'/Downloads/sulci.svg").getroot()      # 1. it must PARSE
+   g = [l for l in r.findall(f"{{{S}}}g[@{{{I}}}label]") if l.get(f"{{{I}}}label")=="sulci"][0]
+   shapes = [l for l in g.findall(f"{{{S}}}g[@{{{I}}}label]") if l.get(f"{{{I}}}label")=="shapes"][0]
+   labels = [l for l in g.findall(f"{{{S}}}g[@{{{I}}}label]") if l.get(f"{{{I}}}label")=="labels"][0]
+   assert list(labels) == [], "labels layer must be EMPTY"    # 2. else db.get_overlay() raises
+   for p in r.iter(f"{{{S}}}path"):
+       assert not p.get("d").strip().endswith(("Z","z")), "a sulcus path must stay open"
+   print({gg.get(f"{{{I}}}label"): len(gg.findall(f"{{{S}}}path")) for gg in shapes})
+   '
    ```
 
-   Expected output: `0`.
+   Expected: `{'CS': 2}` — one group named `CS`, one `<path>` per hemisphere. (`test/test_sulci_svg.py`
+   asserts all of this against the writer's output in CI; what this step adds is that the *download*
+   produced that output as a real file. The `Blob`/anchor path has never been exercised.)
 
-   *(Verified against the live overlay: `exportSulciMarkup` emitted 3 non-closing paths, merged both
-   `CS` curves into one group, XML-escaped a hostile name, and used exactly
-   `fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round`. The download
-   itself — the `Blob`/anchor path — was not exercised.)*
-
-9. ⬜ **Round-trip into pycortex.** Paste (or merge) the `sulci.svg` fragment into the subject's
-   `overlays.svg` and confirm `db.get_overlay(subject)` parses it (the sulci appear under
+9. ⬜ **Round-trip into pycortex.** **Copy the `<g inkscape:label="CS">` group** out of the exported
+   file's `#sulci_shapes` and into the subject's **existing** `#sulci_shapes` group in
+   `overlays.svg`. (Do *not* paste the whole `<g id="sulci">` layer — `SVGOverlay` keys layers by
+   `inkscape:label`, so a second one named `sulci` replaces the subject's own and every pre-existing
+   sulcus vanishes.) Then confirm `db.get_overlay(subject)` parses it (the sulci appear under
    `svg.sulci`) and `cortex.quickflat.make_figure(..., with_sulci=True)` (or the WebGL viewer's sulci
    overlay) renders the traced sulci correctly — open strokes, correct name, correct position.
-   **This is the single most important unverified step**: nothing has ever fed roidraw's output to
-   `cortex/svgoverlay.py`'s parser.
+   Confirm pycortex **generates** the labels itself, one per path.
+   **This is the single most important unverified step**: `cortex/svgoverlay.py`'s parser has never
+   run on roidraw's output. `test/test_sulci_svg.py` reproduces that parser's *queries* against an
+   XML parser, which is as close as CI can get without a subject.
 
 10. ⬜ **ROI round-trip through a real file.** The ROI side has never been read back either — the
     format round-trip is proven in `test/properties.test.js` (300 seeded trials through a real
@@ -98,9 +110,13 @@ Open the viewer, switch to **Draw** mode.
 - Steps 1–7 failing points at `ui/draw-panel.js`, `ui/lasso-overlay.js`, `ui/bezier-edit-overlay.js`,
   or `index.js`'s `_applyEdit` sulcus branch (see `TESTING.md`'s "honest gaps" — none of these have a
   headless test).
-- Step 8 failing points at `core/svg-export.js` — but note its unit tests (`test/svg-export.test.js`)
-  already pin the no-`Z`, one-group-per-name, and escaping behaviors, so a failure here more likely
-  means the adapter/controller wiring (`adapter/pycortex-adapter.js`'s `exportSulciMarkup`, or the
-  controller's `exportSulciSVG()`) isn't calling the writer correctly.
-- Step 9 failing points at a mismatch between roidraw's curated `SULCI_PATH_STYLE` subset and what
-  `cortex/svgoverlay.py` expects on load — this path has never been run in CI (see `TESTING.md`).
+- Step 8 failing points at the adapter/controller wiring — `adapter/pycortex-adapter.js`'s
+  `exportSulciMarkup`, or the controller's `exportSulciSVG()`/`_download()`. The writer itself
+  (`core/svg-export.js`) is pinned by `test/svg-export.test.js` *and* parsed for real by
+  `test/test_sulci_svg.py`, so a structural failure here means the writer wasn't called correctly,
+  not that it wrote the wrong thing.
+- Step 9 failing points at something `cortex/svgoverlay.py` wants that neither test models. The
+  known hazards are already handled: the namespace declarations, the empty-but-present `labels`
+  layer, and the absence of `<text>` (pycortex generates labels from path geometry and would raise
+  `TypeError` on a `<text>` without `x`/`y`). Style is *not* a hazard — pycortex overwrites every
+  path's `style` at load from `[overlay_paths]`, so `SULCI_PATH_STYLE` only affects Inkscape.

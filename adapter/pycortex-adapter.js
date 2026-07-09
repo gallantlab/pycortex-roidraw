@@ -18,7 +18,7 @@
 import { ViewerAdapter } from "./viewer-adapter.js";
 import { chaikin } from "../core/geom.js";
 import { isClosed, segCount } from "../core/bezier.js";
-import { exportSulciSvg } from "../core/svg-export.js";
+import { exportSulciSvg, SULCI_STROKE_WIDTH, SULCI_STROKE_OPACITY } from "../core/svg-export.js";
 
 const SVGNS = "http://www.w3.org/2000/svg";
 const HEMIS = ["left", "right"];
@@ -40,8 +40,10 @@ const OUTLINE_STROKE_PX = 3;      // ROI colored-outline stroke width, in overla
 const OUTLINE_HALO_PX = 2;        // extra width of the white halo drawn under the colored stroke
 const OUTLINE_FALLBACK_COLOR = "#ffffff"; // stroke when an ROI has no (valid) color
 const LABEL_FONT_PT = 14;         // ROI label font size, in pt
-const CURVE_STROKE_PX = 6;        // sulcus stroke width, from pycortex defaults.cfg [sulci_paths]
-const CURVE_STROKE_OPACITY = 0.6; // ...and its stroke-opacity
+// The live overlay strokes a sulcus exactly as the exported markup does. Both read the same two
+// constants (from pycortex's defaults.cfg [sulci_paths]) so they cannot drift apart.
+const CURVE_STROKE_PX = SULCI_STROKE_WIDTH;
+const CURVE_STROKE_OPACITY = SULCI_STROKE_OPACITY;
 
 // A CSS hex color (#rgb / #rrggbb / #rrggbbaa) or the fallback. ROI colors are our own palette, but an
 // imported file could carry anything, and the value goes into an SVG style attribute — restrict it to
@@ -130,6 +132,8 @@ export class PycortexAdapter extends ViewerAdapter {
         this._layerHidden = false;
         this._labelsHidden = false;
         this._uiFolderAdded = false;
+        this._timers = new Set();    // pending setTimeout ids, cancelled by destroy()
+        this._onSetData = null;      // host listener installed by applyHostDefaults()
     }
 
     // --- surface identity -------------------------------------------------------------
@@ -432,7 +436,11 @@ export class PycortexAdapter extends ViewerAdapter {
                 }
                 if (this._drawn.layerEl && this._drawn.layerEl.parentNode)
                     this._drawn.layerEl.parentNode.removeChild(this._drawn.layerEl);
-            } catch (e) { /* best effort */ }
+            } catch (e) {
+                // Best effort: a partially-removed layer still gets replaced below, so keep going —
+                // but say so, since a leaked label sprite would otherwise be an invisible mystery.
+                console.warn("[roidraw] tearing down the previous overlay layer failed:", e);
+            }
             delete svgo.layers[name];
             delete svgo[name];
             this._drawn = null;
@@ -556,21 +564,31 @@ export class PycortexAdapter extends ViewerAdapter {
     }
 
     /*
-     * Serialize drawn sulci as a pycortex overlays.svg fragment. The `d` strings come from the
-     * SAME uv->viewBox mapping the live overlay uses, which is pycortex's own overlay coordinate
-     * space — so the output drops straight into a subject's overlays.svg. Returns "" if the
-     * overlay isn't loaded yet or there are no sulci.
+     * Serialize drawn sulci as a standalone SVG whose `sulci` layer drops straight into a
+     * subject's overlays.svg. The `d` strings come from the SAME uv->viewBox mapping the live
+     * overlay uses, which is pycortex's own overlay coordinate space.
+     *
+     * Returns null when the SVG overlay hasn't loaded (so we don't know the coordinate space),
+     * and "" when it has loaded but no sulcus yielded a path. The caller must tell those apart:
+     * they are different failures with different fixes.
      */
     exportSulciMarkup(sulci) {
         const svgo = this.surface.svg;
-        if (!svgo || !svgo.svg) return "";
+        if (!svgo || !svgo.svg) return null;
         const { W, H } = this._overlayDims(svgo);
         return exportSulciSvg(sulci, {
             pathFor: (bez) => (bez ? this._bezierSvgPath(bez, W, H) : null),
-            ptidxFor: (lv) => this._labelPtidx(lv),
+            width: W, height: H,
         });
     }
 
+    /*
+     * The WebGL viewer's label convention: a flat vertex index, right-hemisphere indices offset by
+     * the left hemisphere's vertex count. BROWSER-ONLY. `svgoverlay.js`'s Labels reads `data-ptidx`
+     * off a <text> to place it; the Python side does the reverse (`SVGOverlay.set_coords` computes
+     * `data-ptidx` from the label's x/y). So this value must never be written into exported markup
+     * — see core/svg-export.js. It is used solely for the live, in-viewer overlay layer.
+     */
     _labelPtidx(lv) {
         if (!lv) return null;
         const leftlen = attrCount(this.posdata.left.positions[0]);
@@ -621,12 +639,15 @@ export class PycortexAdapter extends ViewerAdapter {
 
     // pycortex-specific startup niceties (not part of the portable contract):
     // hide the built-in ROI layer (keep sulci), and re-collapse the late "data layers" folder.
+    // Every timer and listener started here is tracked so destroy() can undo it: autoAttach
+    // destroys a prior drawer before attaching a new one, and an orphaned retry chain would keep
+    // poking a dead viewer for seconds afterwards.
     applyHostDefaults() {
         const trySetOverlays = (tries) => {
             const svg = this.surface && this.surface.svg;
             if (!svg || !svg.layers || !(svg.rois || svg.sulci)) {
                 if (tries > OVERLAY_RETRY_MAX) return;
-                setTimeout(() => trySetOverlays(tries + 1), OVERLAY_RETRY_MS);
+                this._later(() => trySetOverlays(tries + 1), OVERLAY_RETRY_MS);
                 return;
             }
             if (svg.rois) { svg.rois.showhide(false); if (svg.rois.labels) svg.rois.labels.showhide(false); }
@@ -635,10 +656,29 @@ export class PycortexAdapter extends ViewerAdapter {
         };
         trySetOverlays(0);
         // the datasets folder is built open after data loads (post-attach); re-collapse a few times
-        COLLAPSE_SCHEDULE_MS.forEach((ms) => setTimeout(() => this.collapseControlPanel(false), ms));
+        COLLAPSE_SCHEDULE_MS.forEach((ms) => this._later(() => this.collapseControlPanel(false), ms));
         const t0 = Date.now();
-        if (this.viewer.addEventListener)
-            this.viewer.addEventListener("setData", () => { if (Date.now() - t0 < COLLAPSE_WINDOW_MS) this.collapseControlPanel(false); });
+        if (this.viewer.addEventListener) {
+            this._onSetData = () => { if (Date.now() - t0 < COLLAPSE_WINDOW_MS) this.collapseControlPanel(false); };
+            this.viewer.addEventListener("setData", this._onSetData);
+        }
+    }
+
+    /* setTimeout, remembered, so destroy() can cancel it. */
+    _later(fn, ms) {
+        const id = setTimeout(() => { this._timers.delete(id); fn(); }, ms);
+        this._timers.add(id);
+        return id;
+    }
+
+    // Release everything applyHostDefaults() started. The overlay layer itself is left in place:
+    // the controller clears it (setOverlayLayer(name, [])) before it tears the adapter down.
+    destroy() {
+        for (const id of this._timers) clearTimeout(id);
+        this._timers.clear();
+        if (this._onSetData && this.viewer.removeEventListener)
+            this.viewer.removeEventListener("setData", this._onSetData);
+        this._onSetData = null;
     }
 
     // Rebuild posdata from hemi attributes if the picker's isn't available (mirrors pycortex).

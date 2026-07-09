@@ -442,3 +442,52 @@ test("moveAnchor/moveHandle: an in-range index still works (guard isn't over-bro
     assert.deepStrictEqual(moveAnchor(bez, 1, [5, 5]).anchors[1], [5, 5]);
     assert.deepStrictEqual(moveHandle(bez, 1, "out", [5, 5]).outHandles[1], [5, 5]);
 });
+
+/*
+ * All five edit ops share ONE out-of-range contract: return an unchanged copy. They used to
+ * disagree — moveAnchor/moveHandle refused, setAnchorSmooth and splitSegment threw a TypeError,
+ * and setAnchorSmooth on a closed curve silently grew smooth[] past anchors[] with holes in it.
+ * The edit overlay carries drag/hover/selection indices across pointer events, so any of these can
+ * be handed an index that a concurrent Delete has invalidated; the caller must not have to know
+ * which op it is calling.
+ */
+test("edit ops: every one is a no-op on an out-of-range anchor/segment index", () => {
+    for (const bez of [fitOpenBezier([[0, 0], [1, 1], [2, 0], [3, 1]]), fitClosedBezier(sq)]) {
+        const n = bez.anchors.length;
+        const ops = {
+            moveAnchor: (i) => moveAnchor(bez, i, [9, 9]),
+            moveHandle: (i) => moveHandle(bez, i, "out", [9, 9]),
+            setAnchorSmooth: (i) => setAnchorSmooth(bez, i, true),
+            deleteAnchor: (i) => deleteAnchor(bez, i),
+            splitSegment: (i) => splitSegment(bez, i, 0.5),
+        };
+        for (const [name, op] of Object.entries(ops)) {
+            for (const bad of [n, n + 5, -1, 1.5, NaN, undefined]) {
+                const r = op(bad);   // must not throw
+                const where = `${name}(${isClosed(bez) ? "closed" : "open"}, i=${bad})`;
+                assert.deepStrictEqual(r.anchors, bez.anchors, where + " changed the anchors");
+                assert.strictEqual(r.inHandles.length, r.anchors.length, where + " desynced inHandles");
+                assert.strictEqual(r.outHandles.length, r.anchors.length, where + " desynced outHandles");
+                assert.strictEqual(r.smooth.length, r.anchors.length, where + " desynced smooth");
+                assert.ok(r.smooth.every((v) => typeof v === "boolean"), where + " left a hole in smooth");
+            }
+        }
+    }
+});
+
+test("splitSegment: an open curve has no wrap segment, so seg = n-1 is out of range", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
+    const n = bez.anchors.length;
+    assert.strictEqual(splitSegment(bez, n - 1, 0.5).anchors.length, n, "the wrap segment must not exist");
+    assert.strictEqual(splitSegment(bez, n - 2, 0.5).anchors.length, n + 1, "the last real segment must split");
+});
+
+test("isClosed: an absent bezier is not a closed one", () => {
+    // A missing `closed` key means closed (older files). A missing bezier means no shape at all, so
+    // evalBezier/nearestOnBezier take the branch that returns 'nothing', not the closed-ring branch.
+    assert.strictEqual(isClosed({ anchors: [] }), true, "a bezier with no `closed` key is closed");
+    assert.strictEqual(isClosed(null), false);
+    assert.strictEqual(isClosed(undefined), false);
+    assert.deepStrictEqual(evalBezier(null), []);
+    assert.strictEqual(nearestOnBezier(null, [0, 0]), null);
+});

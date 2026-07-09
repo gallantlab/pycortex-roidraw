@@ -1,11 +1,15 @@
 /*
- * bezier-edit-overlay.js — a transparent 2D canvas over the flatmap for EDITING an ROI's bezier
- * with FULL vector controls. Host-agnostic: it only needs the adapter to locate the surface canvas
- * and to project the vertices around the ROI (for the uv<->px transform of the current view).
+ * bezier-edit-overlay.js — a transparent 2D canvas over the flatmap for EDITING a drawn shape's
+ * bezier with FULL vector controls. The shape is an ROI (a closed curve) or a sulcus (an open one);
+ * the two differ only in whether the curve closes, the anchor floor (3 vs 2), and the endpoints,
+ * which on an open curve are permanent corners carrying a single tangent handle each.
+ *
+ * Host-agnostic: it only needs the adapter to locate the surface canvas and to project the vertices
+ * around the shape (for the uv<->px transform of the current view).
  *
  * The bezier (anchors + explicit in/out tangent handles + a per-anchor smooth flag) is stored in
  * view-independent flat-UV; to show and grab its parts we fit a homography uv->px from the vertices
- * LOCAL to the ROI (the flatmap isn't perfectly planar, so a single global homography drifts —
+ * LOCAL to the shape (the flatmap isn't perfectly planar, so a single global homography drifts —
  * locally it's near-exact), and invert it to map a drag back to uv.
  *
  * Controls:
@@ -33,7 +37,7 @@ const CURVE_HIT = 7;         // px; how close a double-click must be to the curv
 const CURVE_HIT_SAMPLES = 24;// segments/curve sampled when finding the nearest point for a click
 const DRAG_SLOP = 1.5;       // px; movement under this counts as a click (no commit / deselect)
 const TRACK_MS = 500;        // after a zoom/pan, keep re-tracking the surface for this long
-const LOCAL_MARGIN = 0.06;   // uv padding around the ROI for the LOCAL homography fit
+const LOCAL_MARGIN = 0.06;   // uv padding around the shape for the LOCAL homography fit
 const CURVE_SAMPLES = 40;    // samples/segment when stroking the preview curve (kills chord undercut)
 const ANCHOR_R = 4;          // anchor glyph radius (px); a selected/hovered anchor draws larger
 const ANCHOR_R_BIG = 6;
@@ -50,7 +54,7 @@ export class BezierEditOverlay {
     constructor(adapter, { onEdit } = {}) {
         this.adapter = adapter;
         this.onEdit = onEdit || (() => {});
-        this.roi = null;
+        this.shape = null;
         this.bez = null;        // working copy { anchors, inHandles, outHandles, smooth }
         this._uvPoly = null;    // the bezier sampled to a uv polyline; recomputed only when bez changes
         this.H = null;          // uv -> px
@@ -97,19 +101,20 @@ export class BezierEditOverlay {
         if (this.el.width !== w || this.el.height !== h) { this.el.width = w; this.el.height = h; }
     }
 
-    // Begin editing `roi` (must have a bezier), or pass null to stop.
-    setEditing(roi) {
-        this.roi = roi && roi.bezier && roi.bezier.anchors ? roi : null;
-        this.bez = this.roi ? cloneBezier(this.roi.bezier) : null;
+    // Begin editing `shape` — an ROI (closed curve) or a sulcus (open one); it must carry a bezier.
+    // Pass null to stop.
+    setEditing(shape) {
+        this.shape = shape && shape.bezier && shape.bezier.anchors ? shape : null;
+        this.bez = this.shape ? cloneBezier(this.shape.bezier) : null;
         this._sel = -1;
         this._recurve();
         this._drag = null; this._dragMoved = false; this._hover = null; this._panLast = null;
-        this.el.style.pointerEvents = this.roi ? "auto" : "none";
-        this.el.classList.toggle("roidraw-edit-overlay--active", !!this.roi);
-        if (this.roi) { this.syncRect(); this.reproject(); } else { this._stopTracking(); this._clear(); }
+        this.el.style.pointerEvents = this.shape ? "auto" : "none";
+        this.el.classList.toggle("roidraw-edit-overlay--active", !!this.shape);
+        if (this.shape) { this.syncRect(); this.reproject(); } else { this._stopTracking(); this._clear(); }
     }
 
-    isEditing() { return !!this.roi; }
+    isEditing() { return !!this.shape; }
 
     // Re-sample the bezier to a uv polyline. Only the curve changes (on an edit), never the view —
     // so caching this lets the per-frame tracking loop just re-map it through the new homography
@@ -130,7 +135,7 @@ export class BezierEditOverlay {
 
     _trackFrame() {
         this._raf = 0;
-        if (!this.roi) return;
+        if (!this.shape) return;
         this.reproject();
         if (now() < this._trackUntil) this._raf = requestAnimationFrame(() => this._trackFrame());
     }
@@ -138,16 +143,16 @@ export class BezierEditOverlay {
     _stopTracking() { if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; } this._trackUntil = 0; }
 
     // Re-fit the uv->px homography for the current view and redraw. Call on pan/zoom/mix/resize.
-    // The fit is LOCAL to the ROI: the flatmap isn't perfectly planar, so one global homography
-    // drifts (the curve sits slightly inside the baked outline), but around a single ROI it's
+    // The fit is LOCAL to the shape: the flatmap isn't perfectly planar, so one global homography
+    // drifts (the curve sits slightly inside the baked outline), but around a single shape it's
     // near-exact. Falls back to the whole flatmap only if the local region is too sparse on screen.
     reproject() {
         if (!this.bez || this.bez.anchors.length < minAnchors(this.bez)) { this._clear(); return; }
         this.syncRect();
         let c = this._correspondences(this._anchorUvBounds(LOCAL_MARGIN));
-        // If the ROI region is too sparse on screen, fall back to the whole flatmap — but ONLY to
+        // If the shape's region is too sparse on screen, fall back to the whole flatmap — but ONLY to
         // bootstrap the very first fit. Once we have a homography we keep it rather than reprojecting
-        // every vertex each frame in the tracking loop (which would stall when the ROI is off-screen).
+        // every vertex each frame in the tracking loop (which would stall when the shape is off-screen).
         if (c.src.length < 6 && !this.H) c = this._correspondences(null);
         if (c.src.length >= 4) {
             const H = fitHomography(c.src, c.dst);
@@ -202,7 +207,7 @@ export class BezierEditOverlay {
     }
 
     _onDown(e) {
-        if (!this.roi || !this.Hinv) return;
+        if (!this.shape || !this.Hinv) return;
         e.preventDefault();
         const pt = this._evtPt(e);
         const hit = e.shiftKey ? null : this._hitTest(pt);   // Shift forces a pan
@@ -266,7 +271,7 @@ export class BezierEditOverlay {
     }
 
     _onDblClick(e) {
-        if (!this.roi || !this.Hinv) return;
+        if (!this.shape || !this.Hinv) return;
         e.preventDefault();
         const pt = this._evtPt(e);
         const anchor = this._hitTestAnchorOnly(pt);
@@ -297,7 +302,7 @@ export class BezierEditOverlay {
     }
 
     _onKeyDown(e) {
-        if (!this.roi || this._sel < 0) return;
+        if (!this.shape || this._sel < 0) return;
         if (e.key !== "Delete" && e.key !== "Backspace") return;
         const t = e.target, tag = t && t.tagName;
         if (t && (t.isContentEditable || tag === "TEXTAREA" || tag === "INPUT")) return;  // not while typing
@@ -313,7 +318,7 @@ export class BezierEditOverlay {
     }
 
     _onWheel(e) {
-        if (!this.roi) return;
+        if (!this.shape) return;
         e.preventDefault();
         this.adapter.zoom(e.deltaY);
         this._pokeTracking();   // re-track on rAF (the zoom applies on the next render frame)
@@ -330,7 +335,7 @@ export class BezierEditOverlay {
         const ctx = this.ctx;
         if (!ctx) return;
         this._clear();
-        if (!this.roi || !this.H || !this._uvPoly) return;
+        if (!this.shape || !this.H || !this._uvPoly) return;
         const toPx = (uv) => applyHomography(this.H, uv);
 
         // the curve: the cached (dense) uv polyline mapped through the current homography. Dense

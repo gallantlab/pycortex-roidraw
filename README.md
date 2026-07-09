@@ -11,8 +11,9 @@ Two kinds of shape, each exported in the format its consumer expects:
 - **ROIs** are *closed* curves. They carry per-hemisphere vertex membership and export to a
   portable JSON vertex set. The bezier is stored alongside it, so reloaded ROIs re-edit by dragging
   their control points.
-- **Sulci** are *open* curves. They carry **no** vertex membership and export as an
-  `overlays.svg`-compatible SVG fragment — the way pycortex itself stores sulci.
+- **Sulci** are *open* curves. They carry **no** vertex membership and export as a standalone SVG
+  whose `sulci` layer drops straight into a subject's `overlays.svg` — the way pycortex itself
+  stores sulci.
 
 The whole feature ships as one self-contained script (`dist/roidraw.bundle.js`, CSS included), so
 it can be dropped into **any** pycortex viewer — a static one (like a `make_static` export) or a
@@ -72,7 +73,8 @@ count column shows enclosed vertices for an ROI, anchors for a sulcus. Below the
 in one toggleable overlay layer (Surface → overlays → "drawn ROIs") alongside the built-in
 rois/sulci.
 
-A stray click can't create a shape: a trace must span more than a few pixels before it registers.
+A stray click can't create a shape: any stroke, lasso or trace, must span more than a few pixels
+before it registers.
 
 ### Editing a shape — full bezier controls
 
@@ -132,27 +134,42 @@ appear in this file; it is an ROI format.
 
 ### Sulcus export format — `sulci.svg`
 
-Sulci are **not** exported as JSON. **Export sulci (SVG)** downloads an `overlays.svg`-compatible
-fragment — pycortex's own storage format for sulci — which `quickflat.add_sulci`, the WebGL viewer,
-and Inkscape all read natively. Paste or merge it into the subject's `overlays.svg`:
+Sulci are **not** exported as JSON. **Export sulci (SVG)** downloads a standalone SVG whose `sulci`
+layer is exactly the layer pycortex's `cortex/svgoverlay.py` reads — no roidraw-specific format
+involved.
 
 ```xml
-<g inkscape:groupmode="layer" id="sulci" inkscape:label="sulci" style="display:inline">
-  <g inkscape:groupmode="layer" id="sulci_shapes" inkscape:label="shapes">
-    <g inkscape:groupmode="layer" inkscape:label="CS">
-      <path style="fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round"
-            d="M412.55,301.90C…" />   <!-- left hemisphere -->
-      <path style="fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round"
-            d="M598.31,297.44C…" />   <!-- right hemisphere -->
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     version="1.1" width="1024" height="768" viewBox="0 0 1024 768">
+  <g inkscape:groupmode="layer" id="sulci" inkscape:label="sulci" style="display:inline">
+    <g inkscape:groupmode="layer" id="sulci_shapes" inkscape:label="shapes">
+      <g inkscape:groupmode="layer" inkscape:label="CS">
+        <path style="fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round"
+              d="M412.55,301.90C…" />   <!-- left hemisphere -->
+        <path style="fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round"
+              d="M598.31,297.44C…" />   <!-- right hemisphere -->
+      </g>
     </g>
+    <g inkscape:groupmode="layer" id="sulci_labels" inkscape:label="labels" />
   </g>
-  <g inkscape:groupmode="layer" id="sulci_labels" inkscape:label="labels">
-    <text data-ptidx="48213" …>CS</text>
-  </g>
-</g>
+</svg>
 ```
 
-Three things follow from matching pycortex rather than inventing a format:
+#### Installing it into a subject
+
+> **Copy the `<g inkscape:label="…">` groups out of `#sulci_shapes` and into the subject's
+> *existing* `#sulci_shapes` group.**
+
+Do **not** paste the whole `<g id="sulci">` layer. `SVGOverlay` keys its layers by
+`inkscape:label`, so a second layer labelled `sulci` silently replaces the subject's own — every
+sulcus already in that file disappears. The downloaded file repeats this warning in an XML comment.
+
+Then `db.get_overlay(subject)` exposes the new curves under `svg.sulci`, and
+`quickflat.make_figure(…, with_sulci=True)`, the WebGL viewer, and Inkscape all render them.
+
+#### Why the file looks the way it does
 
 - **The paths never close.** A missing trailing `Z` is the *only* on-disk marker separating a sulcus
   from an ROI in `overlays.svg` — both are `fill:none`.
@@ -160,8 +177,18 @@ Three things follow from matching pycortex rather than inventing a format:
   the same name; they become one `<g inkscape:label="CS">` with a `<path>` child each, exactly as
   pycortex's own `CaS` is stored. Duplicate names are the intended workflow, not a mistake.
 - **Sulci carry no vertex membership.** pycortex stores none either — there is no `get_sulci_verts`;
-  sulci are display geometry. The only path→vertex mapping is the label's `data-ptidx`, which is
-  precisely what pycortex's own `set_coords` computes.
+  sulci are display geometry.
+- **The `labels` layer is present and empty, and that is deliberate.** pycortex computes each
+  sulcus's label position from its path geometry at load (`Shape.get_labelpos`, one label per path,
+  so a two-hemisphere sulcus is labelled twice for free) and writes `data-ptidx` itself from that
+  position. `data-ptidx` is pycortex's *output*, not its input: a real `overlays.svg` contains zero
+  `<text>` elements, and `Labels.__init__` reads `float(text.get('x'))` off every `<text>` it finds,
+  so a label carrying only a vertex index would make `db.get_overlay()` raise `TypeError`. The empty
+  layer itself is mandatory — `_find_layer(layer, "labels")` raises `ValueError` without it.
+  (roidraw's *live, in-browser* overlay does place labels by `data-ptidx`; that is the WebGL viewer's
+  own convention, and it stops at the browser.)
+- **The on-disk `style` is for Inkscape's benefit only.** pycortex overwrites every path's style at
+  load from `[overlay_paths]`, and `quickflat` re-applies `[sulci_paths]` at render time.
 
 Export is one-way: sulci are not re-imported from SVG.
 
@@ -179,7 +206,7 @@ core/      pure JS — no DOM, no THREE, no host globals (unit-tested under node
   bezier.js      fit an editable bezier — closed (ROI ring) or open (sulcus trace) — and edit it
   transform.js   uv↔px homography (place/grab edit knots; map a traced stroke back to uv)
   shape-model.js the shape collection (ROIs + sulci) + the vertexset-v2 ROI export/import
-  svg-export.js  pure writer for pycortex overlays.svg sulci markup
+  svg-export.js  pure writer for pycortex overlays.svg sulci markup (paths only, never labels)
   draw-mode.js   the flat-only Draw state machine (the "reached flat" latch)
 
 adapter/   the ViewerAdapter CONTRACT + one host implementation
@@ -191,7 +218,8 @@ ui/        host-agnostic DOM components (talk only to core + adapter)
   overlay-geom.js   pure hit-testing math for the edit overlay (no DOM; unit-tested)
 
 draw-pipeline.js  ROI: lasso → select → fit bezier → re-derive membership.
-                  Sulcus: trace → px→uv via homography → fit open bezier → label vertex.
+                  Sulcus: trace → px→uv via homography → fit open bezier → label vertex
+                  (the label is for the live overlay only; the export carries none).
                   (pure; uses core + an adapter)
 index.js          controller wiring core + adapter + ui; exposes window.ROIDraw
 build.mjs         esbuild → dist/roidraw.bundle.js (CSS inlined)

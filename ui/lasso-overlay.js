@@ -7,9 +7,22 @@
  * Committed ROIs are NOT drawn here (the adapter renders them into the surface); this only
  * shows the in-progress lasso, and drawing happens at full-flat so it never needs reprojection.
  */
-const DRAG_THRESHOLD = 4;       // px; distinguishes a Shift-click (inspect) from a Shift-drag
+const DRAG_THRESHOLD = 4;       // px; distinguishes a click from a drag (Shift-inspect, and a stray
+                                // click that would otherwise become a degenerate shape)
 const LASSO_STROKE = "#ffcc00"; // in-progress lasso outline color
 const LASSO_WIDTH = 1.5;
+
+/* Diagonal of the stroke's bounding box, in px. 0 for a stroke that never left its start point. */
+function bboxDiagonal(pts) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of pts) {
+        if (p[0] < minX) minX = p[0];
+        if (p[0] > maxX) maxX = p[0];
+        if (p[1] < minY) minY = p[1];
+        if (p[1] > maxY) maxY = p[1];
+    }
+    return Math.hypot(maxX - minX, maxY - minY);
+}
 
 export class LassoOverlay {
     constructor(adapter, { onLasso, onInspect, onTrace } = {}) {
@@ -54,8 +67,9 @@ export class LassoOverlay {
         this.el.style.top = Math.round(r.top) + "px";
         this.el.style.width = w + "px";
         this.el.style.height = h + "px";
-        this.el.width = w;
-        this.el.height = h;
+        // assigning canvas.width/height clears the bitmap + resets the 2D context, so only do it on
+        // an actual size change (same reason as BezierEditOverlay.syncRect).
+        if (this.el.width !== w || this.el.height !== h) { this.el.width = w; this.el.height = h; }
         this._redraw();
     }
 
@@ -144,23 +158,14 @@ export class LassoOverlay {
         const pts = this.lasso;
         this.lasso = [];
         this._redraw();
-        // A trace needs only 2 points (a line); a closed lasso needs 3 to bound an area.
-        if (this.tool === "trace") {
-            if (pts.length >= 2) {
-                let minX = pts[0][0], maxX = pts[0][0], minY = pts[0][1], maxY = pts[0][1];
-                for (let j = 1; j < pts.length; j++) {
-                    minX = Math.min(minX, pts[j][0]); maxX = Math.max(maxX, pts[j][0]);
-                    minY = Math.min(minY, pts[j][1]); maxY = Math.max(maxY, pts[j][1]);
-                }
-                // Guard against a degenerate stroke (e.g. an accidental click with a 1px wobble):
-                // require the stroke's bounding-box diagonal to exceed the same threshold used to
-                // distinguish a Shift-click from a Shift-drag, so a stray click can't mint a
-                // near-zero-length 2-anchor sulcus.
-                if (Math.hypot(maxX - minX, maxY - minY) > DRAG_THRESHOLD) this.onTrace(pts);
-            }
-            return;
-        }
-        if (pts.length >= 3) this.onLasso(pts);
+        // Both tools reject a degenerate stroke — an accidental click with a few pixels of wobble
+        // still emits several points. Requiring the stroke's bounding-box diagonal to exceed the
+        // same threshold that separates a Shift-click from a Shift-drag means a stray click can
+        // neither mint a near-zero-length sulcus nor run the whole selection pipeline for nothing.
+        // Beyond that, a trace needs only 2 points (a line); a closed lasso needs 3 to bound an area.
+        const minPts = this.tool === "trace" ? 2 : 3;
+        if (pts.length < minPts || bboxDiagonal(pts) <= DRAG_THRESHOLD) return;
+        if (this.tool === "trace") this.onTrace(pts); else this.onLasso(pts);
     }
 
     _onWheel(e) {

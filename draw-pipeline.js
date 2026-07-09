@@ -93,8 +93,8 @@ export function deriveRoiFromLasso(adapter, pts) {
 /*
  * Nearest surface vertex to a flat-UV point. Brute force over every vertex: this runs once per
  * drawn curve, not per frame. It is the roidraw analogue of pycortex's SVGOverlay.set_coords,
- * which builds a cKDTree over the flat vertex coords purely to place a LABEL (`data-ptidx`) — the
- * only path->vertex mapping pycortex sanctions. Returns {h,g} or null on an empty surface.
+ * which builds a cKDTree over the flat vertex coords purely to place a LABEL (`data-ptidx`).
+ * Returns {h,g} or null on an empty surface.
  */
 export function nearestVertexTo(adapter, uv) {
     const all = adapter.allVertexUV();
@@ -126,6 +126,10 @@ function correspondences(adapter) {
  * Shared by the initial trace and by every subsequent edit, so a reshaped sulcus relabels the
  * same way a freshly traced one does. (Cf. backfillLabel, which does the analogous job for an
  * ROI ring.) Returns {h,g} or null.
+ *
+ * FOR THE LIVE IN-VIEWER OVERLAY ONLY. The WebGL viewer places a label by vertex index
+ * (`data-ptidx`); the exported overlays.svg must NOT carry one, because pycortex computes sulcus
+ * label positions from the path geometry itself at load time. See core/svg-export.js.
  *
  * Assumes `bezier` is open: it samples with evalOpenBezier, which on a CLOSED ring would silently
  * skip the wrap segment and pick a subtly wrong midpoint. Pass an ROI's bezier to roiFromBezier

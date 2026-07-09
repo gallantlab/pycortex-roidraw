@@ -2,12 +2,16 @@
  * transform.js — a 2D projective transform (homography) between the flat-UV space and screen
  * pixels at the CURRENT flat view. Pure (no DOM/THREE/host): unit-testable.
  *
- * Used ONLY by the bezier edit overlay: anchors are stored in view-independent uv, but to draw
- * and drag them we need where they land on screen right now. At full-flat the whole flatmap is
- * one plane, so uv->px is exactly a homography; we fit it from the (uv, px) correspondences the
- * adapter already produces for the in-frustum vertices, and invert it to map drag clicks back.
+ * Two callers. The bezier edit overlay stores anchors in view-independent uv but must know where
+ * they land on screen right now (and map a drag back). draw-pipeline's curveFromTrace does the
+ * reverse for a freshly traced sulcus: screen px -> uv, for storage. At full-flat the whole flatmap
+ * is one plane, so uv->px is exactly a homography; we fit it from the (uv, px) correspondences the
+ * adapter already produces for the in-frustum vertices, and invert it as needed.
  *
  * H is a row-major 9-array [h0..h8]:  [u' v' w'] = H * [x y 1];  result = [u'/w', v'/w'].
+ *
+ * No Hartley normalization: solving the normal equations squares the condition number, which would
+ * matter for arbitrary pixel coordinates, but our `src` is uv in [0,1]^2 and already well scaled.
  */
 
 const PIVOT_EPS = 1e-12;   // Gaussian-elimination pivot below this ⇒ treat the system as singular
@@ -62,10 +66,14 @@ function spans2D(pts) {
  * src, dst: arrays of [x, y] of equal length. Returns a 9-array H, or null if the fit is
  * under-determined (too few / collinear points) or degenerate (non-finite entries) — callers
  * should keep their last good fit rather than apply a garbage transform.
+ *
+ * BOTH sides must span two dimensions. A collinear `dst` (an edge-on view of the flatmap, where
+ * every vertex projects onto one screen line) yields a system that solves to finite garbage and so
+ * would sail past the isFinite check below.
  */
 export function fitHomography(src, dst) {
     const n = Math.min(src.length, dst.length);
-    if (n < 4 || !spans2D(src)) return null;
+    if (n < 4 || !spans2D(src) || !spans2D(dst)) return null;
     // Unknowns h0..h7 (h8 fixed to 1). Two equations per point:
     //   h0 x + h1 y + h2          - h6 x u - h7 y u = u
     //            h3 x + h4 y + h5 - h6 x v - h7 y v = v

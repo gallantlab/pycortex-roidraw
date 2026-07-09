@@ -20,6 +20,28 @@ import css from "./ui/roidraw.css";
 const LAYER = "drawnrois";
 const FILL_TARGET = 0.70;  // brain fills ~70% of the viewport
 const FRAME_LERP = 0.30;   // per-frame damping of the zoom-to-fill during a morph
+const FRAME_TRIES = 60;    // _frameOnLoad: polls for a measurable surface, 100 ms apart
+const FRAME_POLL_MS = 100;
+// Firefox writes a 0-byte file if the anchor is removed / the object URL revoked before the
+// download starts, so both are deferred well past the click.
+const DOWNLOAD_TEARDOWN_MS = 4000;
+const OVERLAY_SYNC_TRIES = 40;  // _sync: retries while the host's SVG overlay is still loading
+const OVERLAY_SYNC_MS = 250;    // ...interval between those retries
+
+// The one-line hint under the panel heading, per state. Kept out of _renderStatus so that
+// function reads as the state machine it is.
+const STATUS = {
+    flattening: "Flattening…",
+    editing: "Editing — drag ● to move · click an anchor, drag ○ to bend · double-click the line to " +
+             "add a point · double-click ● to toggle corner/smooth · select + Delete to remove · " +
+             "scroll to zoom · ✓ done when finished.",
+    trace: "Drag along the sulcus · ✎ to edit a curve · scroll to zoom · Shift+drag to pan · Shift+click to inspect.",
+    lasso: "Lasso to draw an ROI · ✎ to edit a shape · scroll to zoom · Shift+drag to pan · Shift+click to inspect.",
+};
+
+/* Byte length of a string once encoded, which is what a downloaded file actually weighs.
+ * `str.length` counts UTF-16 code units and undercounts every non-ASCII character in a shape name. */
+const byteLength = (s) => new TextEncoder().encode(s).length;
 
 function injectCss() {
     if (document.getElementById("roidraw-css")) return;
@@ -48,6 +70,9 @@ class ROIDrawer {
             onEdit: (bez) => this._applyEdit(bez),
         });
         this.editingId = null;
+        this._timers = new Set();   // pending setTimeout ids, all cancelled by destroy()
+        this._syncRetries = 0;      // consecutive failed setOverlayLayer attempts
+        this._syncTimer = 0;        // the queued _sync retry, if any
         this.panel = new DrawPanel({
             onExport: () => this.exportJSON(),
             onExportSulci: () => this.exportSulciSVG(),
@@ -74,6 +99,14 @@ class ROIDrawer {
     // The mode ("display"|"draw") is owned by the state machine; read through to it.
     get mode() { return this._dm.mode; }
 
+    /* setTimeout, remembered, so destroy() can cancel it. autoAttach destroys a prior drawer
+     * before attaching a new one; an orphaned poll would keep calling a dead adapter. */
+    _later(fn, ms) {
+        const id = setTimeout(() => { this._timers.delete(id); fn(); }, ms);
+        this._timers.add(id);
+        return id;
+    }
+
     // --- view framing -----------------------------------------------------------------
 
     _frame() {
@@ -86,7 +119,7 @@ class ROIDrawer {
 
     _frameOnLoad(tries) {
         const fr = this.adapter.measureFrame(FILL_TARGET);
-        if (!fr) { if (tries < 60) setTimeout(() => this._frameOnLoad(tries + 1), 100); return; }
+        if (!fr) { if (tries < FRAME_TRIES) this._later(() => this._frameOnLoad(tries + 1), FRAME_POLL_MS); return; }
         this.adapter.animateCamera({ target: fr.com, radius: fr.radius }); // glide, not a jump
     }
 
@@ -107,6 +140,10 @@ class ROIDrawer {
     // --- modes ------------------------------------------------------------------------
 
     setMode(mode) {
+        // Re-entering Draw would re-flatten and re-arm the machine's latch, stomping on a flatten
+        // glide already in flight. (Re-entering Display is idempotent, and the constructor calls
+        // setMode("display") to paint the initial UI — so only Draw short-circuits.)
+        if (mode === "draw" && this.mode === "draw") return;
         if (mode === "draw") {
             if (this._dm.enterDraw().flatten) this.adapter.flatten();  // flat-only; lasso activates once flat
             this.adapter.setControlPanelVisible(false);
@@ -139,10 +176,9 @@ class ROIDrawer {
 
     _renderStatus() {
         if (this.mode !== "draw") return;   // the panel is hidden in Display mode
-        if (!this.adapter.isFlat()) { this.panel.setStatus("Flattening…", "warn"); return; }
-        if (this.editOverlay.isEditing()) this.panel.setStatus("Editing — drag ● to move · click an anchor, drag ○ to bend · double-click the line to add a point · double-click ● to toggle corner/smooth · select + Delete to remove · scroll to zoom · ✓ done when finished.", "draw");
-        else if (this.overlay.tool === "trace") this.panel.setStatus("Drag along the sulcus · ✎ to edit a curve · scroll to zoom · Shift+drag to pan · Shift+click to inspect.", "draw");
-        else this.panel.setStatus("Lasso to draw an ROI · ✎ to edit a shape · scroll to zoom · Shift+drag to pan · Shift+click to inspect.", "draw");
+        if (!this.adapter.isFlat()) { this.panel.setStatus(STATUS.flattening, "warn"); return; }
+        if (this.editOverlay.isEditing()) this.panel.setStatus(STATUS.editing, "draw");
+        else this.panel.setStatus(this.overlay.tool === "trace" ? STATUS.trace : STATUS.lasso, "draw");
     }
 
     // --- drawing pipeline -------------------------------------------------------------
@@ -185,14 +221,18 @@ class ROIDrawer {
 
     // --- editing ----------------------------------------------------------------------
 
-    // Toggle shape editing. id => start editing that ROI's bezier; null => stop.
+    // Toggle shape editing. id => start editing that shape's bezier; null => stop.
     _editToggle(id) {
-        const roi = id != null ? this.shapes.shapes.find((r) => r.id === id) : null;
+        const found = id != null ? this.shapes.shapes.find((s) => s.id === id) : null;
+        // Only a shape with an editable curve can be edited. BezierEditOverlay refuses the rest, so
+        // accepting one here would leave editingId naming a shape the overlay isn't editing: the
+        // panel would highlight it and offer "✓ Done editing" while the lasso stayed armed.
+        const shape = (found && found.bezier && found.bezier.anchors) ? found : null;
         // Editing happens on the flatmap (the bezier knots live in the flat view). Starting an edit
         // re-flattens if the surface has been inflated, so the shape's anchors land on the surface.
-        if (roi && this._dm.noteEditStart(this.adapter.isFlat()).flatten) this.adapter.flatten();
-        this.editingId = roi ? roi.id : null;
-        this.editOverlay.setEditing(roi || null);
+        if (shape && this._dm.noteEditStart(this.adapter.isFlat()).flatten) this.adapter.flatten();
+        this.editingId = shape ? shape.id : null;
+        this.editOverlay.setEditing(shape);
         this.panel.setEditingId(this.editingId);
         this._updateDrawActive();            // lasso off while editing, back on when done
         this.panel.renderList(this.shapes.shapes);
@@ -209,18 +249,28 @@ class ROIDrawer {
             const d = roiFromBezier(this.adapter, bezier);
             if (d && d.total) { shape.left = d.left; shape.right = d.right; shape.outline = d.outline; shape.labelVert = d.labelVert; }
         } else {
-            // A sulcus has no membership to re-derive, but its label must follow the curve — otherwise a
-            // reshaped sulcus exports a <text data-ptidx> pinned to its original midpoint.
+            // A sulcus has no membership to re-derive, but the name label baked onto the surface must
+            // follow the curve — otherwise a reshaped sulcus keeps its name at the original midpoint.
+            // (This label is live-overlay only; it is never written into the exported SVG.)
             const lv = labelForCurve(this.adapter, bezier);
             if (lv) shape.labelVert = lv;
         }
-        this.adapter.setOverlayLayer(LAYER, this.shapes.shapes);   // re-rasterize the smooth outline
-        this.panel.renderList(this.shapes.shapes);                 // refresh the anchor/vertex list for this shape's kind
+        this._sync();                       // re-rasterize the smooth outline + refresh the panel row
     }
 
+    // Push the model into the surface overlay and the panel. setOverlayLayer fails while the host's
+    // SVG overlay is still loading; without a retry the shape sits in the model and the panel,
+    // listed and counted, and is simply never drawn. Poll until it lands.
     _sync() {
-        this.adapter.setOverlayLayer(LAYER, this.shapes.shapes);
         this.panel.renderList(this.shapes.shapes);
+        if (this.adapter.setOverlayLayer(LAYER, this.shapes.shapes)) { this._syncRetries = 0; return; }
+        if (this._syncTimer) return;   // a retry is already queued, and it will read the latest model
+        if (this._syncRetries >= OVERLAY_SYNC_TRIES) {
+            this.panel.message("The viewer's SVG overlay never loaded — shapes can't be drawn onto the surface.");
+            return;
+        }
+        if (this._syncRetries++ === 0) this.panel.message("Waiting for the viewer's SVG overlay to load…");
+        this._syncTimer = this._later(() => { this._syncTimer = 0; this._sync(); }, OVERLAY_SYNC_MS);
     }
 
     remove(id) {
@@ -241,9 +291,7 @@ class ROIDrawer {
         a.style.display = "none";
         document.body.appendChild(a);
         a.click();
-        // Firefox writes a 0-byte file if the anchor is removed / the URL revoked before the
-        // download starts — defer both well past the click instead of tearing down immediately.
-        setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
+        this._later(() => { a.remove(); URL.revokeObjectURL(url); }, DOWNLOAD_TEARDOWN_MS);
     }
 
     exportJSON() {
@@ -253,20 +301,23 @@ class ROIDrawer {
         try { text = JSON.stringify(this.shapes.toJSON(this.adapter.surfaceId()), null, 2); }
         catch (e) { this.panel.message("Export failed: " + (e && e.message ? e.message : e)); return; }
         this._download(text, "rois.json", "application/json");
-        this.panel.message("Exported " + rois.length + " ROI(s), " + text.length + " bytes, to rois.json.");
+        this.panel.message("Exported " + rois.length + " ROI(s), " + byteLength(text) + " bytes, to rois.json.");
     }
 
-    /* Sulci export as pycortex's OWN overlays.svg markup, not as a roidraw JSON format: paste or
-     * merge the fragment into the subject's overlays.svg and quickflat/WebGL/Inkscape read it. */
+    /* Sulci export as pycortex's OWN overlays.svg markup, not as a roidraw JSON format: copy the
+     * shape groups into the subject's overlays.svg and quickflat/WebGL/Inkscape read them. */
     exportSulciSVG() {
         const sulci = this.shapes.byKind("sulcus");
         if (!sulci.length) { this.panel.message("No sulci to export."); return; }
         let xml;
         try { xml = this.adapter.exportSulciMarkup(sulci); }
         catch (e) { this.panel.message("Export failed: " + (e && e.message ? e.message : e)); return; }
-        if (!xml) { this.panel.message("Export failed: the SVG overlay isn't loaded yet."); return; }
+        // null and "" are different failures with different fixes: the adapter can't name the
+        // coordinate space yet, versus it could and no curve produced a path.
+        if (xml === null) { this.panel.message("Export failed: the viewer's SVG overlay isn't loaded yet — try again in a moment."); return; }
+        if (!xml) { this.panel.message("Export failed: no sulcus has a usable curve (each needs at least 2 anchors)."); return; }
         this._download(xml, "sulci.svg", "image/svg+xml");
-        this.panel.message("Exported " + sulci.length + " sulcus curve(s), " + xml.length + " bytes, to sulci.svg.");
+        this.panel.message("Exported " + sulci.length + " sulcus curve(s), " + byteLength(xml) + " bytes, to sulci.svg.");
     }
 
     _import(file) {
@@ -327,15 +378,20 @@ class ROIDrawer {
         window.addEventListener("blur", this._blur);             // stored so destroy() can remove it
     }
 
-    // Tear down everything attach() wired up: the mix subscription, the window listeners, and every
-    // child UI component (each has its own destroy()). Lets a viewer detach/re-attach without leaking.
+    // Tear down everything attach() wired up: pending timers, the mix subscription, the window
+    // listeners, the adapter's own host hooks, and every child UI component (each has its own
+    // destroy()). Lets a viewer detach/re-attach without leaking — which autoAttach does on reload.
     destroy() {
+        for (const id of this._timers) clearTimeout(id);
+        this._timers.clear();
+        this._syncTimer = 0;
         if (this._unsubMix) this._unsubMix();
         window.removeEventListener("resize", this._onResize);
         window.removeEventListener("keydown", this._keydown, true);
         window.removeEventListener("keyup", this._keyup, true);
         window.removeEventListener("blur", this._blur);
         for (const c of [this.overlay, this.editOverlay, this.panel, this.toggle]) if (c && c.destroy) c.destroy();
+        if (this.adapter && this.adapter.destroy) this.adapter.destroy();
     }
 
     // True only for text-entry targets (so we don't swallow Shift/Esc there). A file/button input

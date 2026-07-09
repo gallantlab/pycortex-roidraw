@@ -69,6 +69,8 @@ export class ViewerAdapter {
      * (`outline`) used as a fallback for files predating the bezier.
      * @param {string} name
      * @param {Array<{kind, name, color?, outline?:[{h,g}], labelVert:{h,g}, bezier?}>} shapes
+     * @returns {boolean} false if the host's overlay machinery isn't ready yet (the caller retries);
+     *   true once the layer is in place. Never silently drop shapes — they'd be listed but undrawn.
      */
     setOverlayLayer(_name, _shapes) { throw new Error("ViewerAdapter.setOverlayLayer not implemented"); }
 
@@ -116,6 +118,9 @@ export class ViewerAdapter {
 
     /** Show/hide the host's control panel when switching Display/Draw modes. */
     setControlPanelVisible(_visible) {}
+
+    /** Release any host listeners/timers the adapter installed. Called by ROIDrawer.destroy(). */
+    destroy() {}
 }
 
 // The methods an implementation MUST provide (every one above that throws). The "optional niceties"

@@ -18,10 +18,21 @@ prints the seed and reproduces deterministically):
   rectangle oracle, not the impl's own point-in-polygon);
 - the boundary ring is always a subset of the selection;
 - membership re-derived from a curve is deterministic — *what you see is what you get*;
-- a homography composed with its inverse is the identity.
+- a homography composed with its inverse is the identity;
+- `core/bezier.js`'s **open**-curve invariants: `fitOpenBezier` pins the traced endpoints, an open
+  curve's endpoints stay corners (never smooth) through a fit and through any single edit
+  (move/smooth-toggle/delete/split), and `isClosed` reports `false` throughout — a sulcus can never
+  silently acquire a closing segment.
 
-The example-based core tests (`geom`, `selection`, `bezier`, `transform`, `roi-model`, `outline`,
+The example-based core tests (`geom`, `selection`, `bezier`, `transform`, `shape-model`, `outline`,
 `uv-membership`) remain as targeted cases.
+
+### Sulcus SVG export — unit (pure writer)
+`core/svg-export.js` (`test/svg-export.test.js`) is the pure writer for the `overlays.svg`-compatible
+sulci fragment. It guarantees: a sulcus path never closes with a trailing `Z` (the only on-disk
+marker separating a sulcus from an ROI); curves that share a name merge into a single
+`<g inkscape:label="…">` rather than colliding, exactly as pycortex's own multi-hemisphere `CaS`
+does; and names are XML-escaped before landing in an attribute or a text node.
 
 ### Draw-mode state machine — unit (the flat-only latch)
 `core/draw-mode.js` (`test/draw-mode.test.js`) is the extracted pure state machine behind Draw mode.
@@ -70,3 +81,16 @@ viewer, `autoAttach`, dispatch a synthetic lasso, click Export, assert non-empty
 shape — run in CI against a pinned viewer fixture. That needs a checked-in viewer fixture + a browser
 in CI, so it's deliberately *not* wired into `npm test` yet; it's the recommended next step for true
 end-to-end coverage.
+
+Sulcus drawing adds three more honest gaps of the same kind:
+
+- The exported `sulci.svg` fragment is asserted structurally (open paths, merged groups, XML
+  escaping) but has never been round-tripped through pycortex's `svgoverlay.py` parser in CI.
+  Loading it into a real subject's `overlays.svg` is a manual check.
+- `index.js` has no unit harness. The `labelForCurve` regression guard (a reshaped sulcus must
+  relabel) sits on the pure helper in `draw-pipeline.js`, not on `_applyEdit`'s sulcus branch that
+  calls it. Only a manual browser check exercises the real call site.
+- `adapter/pycortex-adapter.js` and the three `ui/` overlays have no headless test; only
+  `test/bundle.test.js` catches build breakage. The open-curve rendering path (no trailing `Z`,
+  sulcal stroke weight) was verified by direct function extraction, not against a live pycortex
+  viewer.

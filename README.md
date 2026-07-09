@@ -107,6 +107,22 @@ The `bezier` carries explicit tangent handles and a per-anchor `smooth` flag, so
 re-edits identically. `v1` files (no `bezier`) still import — the bezier is back-filled from the
 outline ring; a `bezier` from an earlier build (no `smooth`) is treated as all-smooth.
 
+### Sulci
+
+Switch the panel's kind selector to **Sulcus** and drag along the sulcus. A sulcus is an *open*
+curve, editable exactly like an ROI's boundary. Trace each hemisphere separately and give both
+strokes the same name — on export they merge into one group, which is how pycortex's own overlays
+store a sulcus (`CaS` has one `<path>` per hemisphere).
+
+**Export sulci (SVG)** downloads an `overlays.svg`-compatible fragment. This is pycortex's own
+storage format for sulci: open `fill:none` paths in a `sulci` layer, carrying no vertex data.
+Paste or merge it into the subject's `overlays.svg` and `quickflat.add_sulci`, the WebGL viewer,
+and Inkscape will all read it.
+
+Sulci deliberately store **no vertex membership** — pycortex stores none either (there is no
+`get_sulci_verts`; sulci are display geometry). ROIs still export vertex indices as JSON,
+unchanged.
+
 ---
 
 ## Architecture
@@ -120,7 +136,8 @@ core/      pure JS — no DOM, no THREE, no host globals (unit-tested under node
   outline.js     polygon → ordered boundary ring of vertices (+ label vertex)
   bezier.js      fit an editable closed bezier to a ring; sample it back to a polygon
   transform.js   uv↔px homography (edit overlay only: place/grab knots in the current view)
-  roi-model.js   ROI collection + the portable (de)serialization format (incl. the bezier)
+  shape-model.js the shape collection (ROIs + sulci) + the vertexset-v2 ROI export/import
+  svg-export.js  pure writer for pycortex overlays.svg sulci markup
   draw-mode.js   the flat-only Draw state machine (the "reached flat" latch)
 
 adapter/   the ViewerAdapter CONTRACT + one host implementation

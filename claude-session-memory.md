@@ -2,6 +2,81 @@
 
 _Current status file. Most recent session at top._
 
+## 2026-07-08/09 — Sulcus drawing (v0.4.0): spec → plan → 12 TDD tasks → merged to local main; PUSH PENDING
+
+User asked to add sulcus + gyrus drawing. Brainstormed; **researched how pycortex actually stores
+sulci** rather than inventing a format (user was emphatic: "USE WHATEVER METHOD PYCORTEX IS ALREADY
+USING"). Findings from `/Users/gallant/CLAUDE/PYCORTEX/pycortex-src` (note: session log's old
+`/Users/gallant/CLAUDE/pycortex-src` path is WRONG):
+
+- `svgoverlay.py` has **no `Sulci` and no `ROI` class** — a layer is a generic `Overlay`, keyed by
+  name. Sulci paths are **open** (no trailing `z`); all 53 ROI paths close. Both are `fill:none`.
+- Sulci carry **no vertex data**. No `get_sulci_verts`. Only `set_coords` maps path→vertex, and only
+  for **label** text (`data-ptidx`).
+- A named sulcus commonly has **two `<path>` children** under one `inkscape:label` (one per hemi) —
+  e.g. `CaS`. Hence duplicate names are the intended workflow, and merge on export.
+- **"Gyri" does not exist in pycortex.** User agreed to drop gyri: "you are correct about gyri, they
+  don't exist in pycortex. so restrict this to sulci." Recorded as rejected decision 5 in the spec.
+
+**Shipped (branch `claude/sulcus-drawing` → fast-forwarded onto local `main`, 32 commits ahead of
+`origin/main`; NOT pushed).** v0.3.4 → **v0.4.0**; bundle **112,117 B**. Suite **146 → 152** JS
+tests, Python suites green.
+
+- `core/bezier.js` generalized with a `closed` flag (not forked): `isClosed`, `segCount`,
+  `fitOpenBezier`, `evalOpenBezier`/`evalBezier`, `nearestOnOpenBezier`/`nearestOnBezier`. Open
+  endpoints get a one-sided tangent, are **always corners**, and their unused handle sits on the
+  anchor. `deleteAnchor` floors at 2 open / 3 closed.
+- `core/roi-model.js` → **`core/shape-model.js`**, `ROISet` → **`ShapeSet`**, every shape has
+  `kind: "roi"|"sulcus"`. A sulcus **omits** `left`/`right`/`outline` entirely (not `[]`).
+  `vertexset-v2` JSON is byte-unchanged and holds ROIs only.
+- **`core/svg-export.js`** (new, pure) writes the `overlays.svg` fragment. `SULCI_PATH_STYLE` =
+  `fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round`.
+- `draw-pipeline.js`: `curveFromTrace` (stroke px→uv via the existing `core/transform.js`
+  homography — **no new adapter method**), `nearestVertexTo`, `labelForCurve`.
+- Adapter: `_bezierSvgPath` branches on `closed` (open = n-1 segments, **no `Z`**); `_shapeSvgPath`;
+  `exportSulciMarkup`; `_overlayDims`. `ViewerAdapter.REQUIRED` untouched.
+- UI: lasso overlay gains **trace** mode; panel gains an `ROI | Sulcus` segmented control + a second
+  export button; edit overlay handles open curves (one handle at each endpoint, no closing chord).
+
+**Bugs found and fixed (several were MY errors, recorded so they aren't repeated):**
+1. I read `defaults.cfg` with `grep -A6`, which **truncated** `[sulci_paths]` (10 keys, not 6). I
+   then "corrected" the research agent that had correctly reported `stroke-linecap = round`. It's the
+   one key `[rois_paths]` lacks and it matters — a sulcus is an open stroke with visible end caps.
+2. My plan's pseudocode let `deleteAnchor` promote an interior anchor to endpoint keeping
+   `smooth:true` + a live off-anchor handle. Fixed via `normalizeOpenEndpoints`; property-tested.
+3. A reshaped sulcus kept its trace-time `labelVert`, so the **exported** `<text data-ptidx>` pointed
+   at the wrong vertex. Extracted `labelForCurve`, shared by trace and edit.
+4. **Pre-existing** (affected closed ROIs too): Delete pressed mid-drag left `_drag.i` stale — past
+   the end it corrupted the handle arrays; still in range it silently moved the **wrong anchor**.
+   Fixed at both layers: `moveAnchor`/`moveHandle` refuse an out-of-range index (pure, tested), and
+   the edit overlay drops drag+hover targets whenever the anchor count changes (`splitSegment` too).
+5. Panel CSS: `.roidraw-panel button` (0,1,1) outranked bare `.roidraw-tools__btn` (0,1,0), so its
+   width/margin resets were **inert** while the comments claimed otherwise. Scoped the whole block.
+
+**Live-viewer verification (2026-07-09).** `cortex` is not importable here and `examples/` has only
+`make_viewer.py`, so the adapter has no CI coverage. Shallow-cloned
+`gallantlab/viewer-stories-group-roidraw` to scratchpad, swapped in the new bundle, served on
+:8911, and drove it over the **Chrome DevTools Protocol**. Confirmed against the real pycortex
+adapter: 3 sulci + 1 ROI → 8 baked `<path>`s (halo+stroke each); the 6 sulcal ones carry **no `Z`**,
+the 2 ROI ones do; `exportSulciMarkup` emitted 3 non-closing paths, merged both `CS` curves into one
+`<g inkscape:label="CS">`, XML-escaped a hostile name, used the exact style string; no sulcus leaked
+into the JSON. User looked at it: "it looks like it works."
+
+**Still unverified** (documented in TESTING.md + `docs/superpowers/MANUAL-VERIFICATION-sulci.md`):
+the `svgoverlay.py` round-trip (nothing has ever fed roidraw's SVG to pycortex's parser — the single
+most important open item); every interactive gesture (the CDP run drove state, never a mouse drag);
+`index.js` has no unit harness.
+
+**Open / next time:**
+- `git push origin main` (32 commits). Then cut the **v0.4.0** GitHub release with
+  `dist/roidraw.bundle.js` (112,117 B) attached, and **re-bake the demo viewer** — it is *pinned* to
+  a bundle, not tracking `/releases/latest`. Gotcha from last time: the re-bake needs `git add`
+  before commit. Detect v0.4.0 via markers `fitOpenBezier` / `exportSulciSvg` / `ShapeSet`.
+- **pycortex docs PR is staged but unpushed**: `pycortex-src` branch `claude/document-sulcus-drawing`
+  (2 commits) retitles `docs/roidraw.rst` to "In-browser ROI and sulcus drawing", documents the SVG
+  export, and fixes the stale cross-link title in `docs/rois.rst`.
+- Docs artifacts live under `docs/superpowers/` (spec, plan, manual checklist).
+
 ## 2026-07-02 — Full-project code review → 4 fixes (v0.3.4); release + demo re-bake PENDING (auth-blocked)
 
 User asked for a full code review (accuracy/bugs/edge cases/style/clarity/efficiency), then "do 1

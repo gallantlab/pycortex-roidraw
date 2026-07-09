@@ -105,9 +105,17 @@ then bake the demo **from the downloaded asset** so `demo == release` is demonst
 - **The 2026-07-09 CDP live-viewer check predates the export rewrite** — it validated the old broken
   markup, and was NOT re-run before v0.4.1. The bundle is statically verified (the exporter is pure
   and parser-tested); what remains unexercised in a browser is the adapter wiring + the download.
-- **pycortex docs PR #656 is still OPEN.** Its prose describes the *old* merge instructions ("paste
-  or merge the fragment"), which is now known to be a data-loss footgun — a second
-  `inkscape:label="sulci"` layer replaces the subject's own. Fix that PR before merging.
+- **pycortex docs PR #656 was MERGED on 2026-07-09 at 13:33Z** — about ten minutes before the export
+  fix was pushed. (Earlier notes in this file say "open"; they are stale. The repo has no required
+  checks, so a merge lands immediately.) **The published `docs/roidraw.rst` is therefore wrong on two
+  counts**, and needs a follow-up PR:
+  - It says "Merge the fragment into the subject's ``overlays.svg``". That is the data-loss footgun:
+    `SVGOverlay` keys layers by `inkscape:label`, so appending a second `sulci` layer silently
+    replaces the subject's own. It must say *copy the shape groups into the existing
+    `#sulci_shapes`*.
+  - It calls the export a "fragment". Since v0.4.1 it is a standalone, namespace-declaring `<svg>`
+    document — the old bare fragment parsed nowhere.
+  User was offered this follow-up PR at the end of the session; not yet authorized.
 - Lesson recorded in memory as `string-tests-cannot-check-a-format`.
 
 ## 2026-07-08/09 — Sulcus drawing (v0.4.0): spec → plan → 12 TDD tasks → SHIPPED (release + demo + docs PR)
@@ -187,6 +195,8 @@ most important open item); every interactive gesture (the CDP run drove state, n
   description bumped to v0.4.0.
 - **pycortex docs PR #656** open (`claude/document-sulcus-drawing`): retitles `docs/roidraw.rst`,
   documents the SVG export, fixes the stale cross-link title in `docs/rois.rst`. Docs-only.
+  _[SUPERSEDED 2026-07-09: merged at 13:33Z, and its sulcus-merge prose is now wrong — see the
+  top entry.]_
 - Ordering that matters: release FIRST, then re-bake + docs — the docs link to `/releases/latest`,
   so re-baking or merging docs early leaves users a bundle older than what they read about.
 - Gotcha confirmed again: the demo re-bake needs `git add` before commit; a bare `git commit -m`
@@ -211,6 +221,7 @@ differ in kind. Fixed in TESTING.md + the manual checklist (commit `91225b7`, pu
 
 **Open / next time:**
 - **PR #656 is unmerged.** The repo has no required checks, so `gh pr merge` lands immediately.
+  _[SUPERSEDED: merged 2026-07-09 13:33Z.]_
 - **Highest-value check:** merge an exported `sulci.svg` into a real subject's `overlays.svg`,
   confirm `db.get_overlay()` parses it and `quickflat.make_figure(..., with_sulci=True)` renders it.
   Needs a subject + an importable `cortex` (**not importable in this env** — that's why it's open).

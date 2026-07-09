@@ -292,7 +292,7 @@ export class BezierEditOverlay {
         e.preventDefault();
         const before = this.bez.anchors.length;
         this.bez = deleteAnchor(this.bez, this._sel);
-        if (this.bez.anchors.length === before) return;        // refused (floor of 3)
+        if (this.bez.anchors.length === before) return;        // refused (floor: 3 closed, 2 open)
         this._sel = -1; this._recurve(); this._commit(); this.reproject();
     }
 

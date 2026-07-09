@@ -78,8 +78,9 @@ export class LassoOverlay {
 
     /* Which gesture a plain drag performs: a closed ROI lasso, or an open sulcus trace. */
     setTool(tool) {
-        if (tool === this.tool) return;
-        this.tool = tool === "trace" ? "trace" : "lasso";
+        const t = tool === "trace" ? "trace" : "lasso";
+        if (t === this.tool) return;
+        this.tool = t;
         this._cancel();            // an in-flight stroke belongs to the old tool
     }
 
@@ -144,7 +145,21 @@ export class LassoOverlay {
         this.lasso = [];
         this._redraw();
         // A trace needs only 2 points (a line); a closed lasso needs 3 to bound an area.
-        if (this.tool === "trace") { if (pts.length >= 2) this.onTrace(pts); return; }
+        if (this.tool === "trace") {
+            if (pts.length >= 2) {
+                let minX = pts[0][0], maxX = pts[0][0], minY = pts[0][1], maxY = pts[0][1];
+                for (let j = 1; j < pts.length; j++) {
+                    minX = Math.min(minX, pts[j][0]); maxX = Math.max(maxX, pts[j][0]);
+                    minY = Math.min(minY, pts[j][1]); maxY = Math.max(maxY, pts[j][1]);
+                }
+                // Guard against a degenerate stroke (e.g. an accidental click with a 1px wobble):
+                // require the stroke's bounding-box diagonal to exceed the same threshold used to
+                // distinguish a Shift-click from a Shift-drag, so a stray click can't mint a
+                // near-zero-length 2-anchor sulcus.
+                if (Math.hypot(maxX - minX, maxY - minY) > DRAG_THRESHOLD) this.onTrace(pts);
+            }
+            return;
+        }
         if (pts.length >= 3) this.onLasso(pts);
     }
 

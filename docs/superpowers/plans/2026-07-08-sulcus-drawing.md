@@ -1563,21 +1563,50 @@ In `reproject`:
 
 Find the `nearestOnClosedBezier` call (around line 195, in the double-click-to-insert path) and change it to `nearestOnBezier(this.bez, uv, …)`. `splitSegment` then receives a `seg` already bounded by `segCount`, because `nearestOnOpenBezier` only ever reports `seg` in `[0, n-2]`.
 
-- [ ] **Step 4: Draw only the live handles at an open curve's endpoints**
+- [ ] **Step 4: Don't close the curve preview on an open bezier**
 
-In `_redraw`, where each anchor's two handles are drawn, skip the unused one. An open curve's `inHandles[0]` and `outHandles[n-1]` sit exactly on their anchor, so drawing them would stack a handle dot on the anchor dot and make it undraggable.
+`_redraw` strokes the sampled polyline then calls `ctx.closePath()` unconditionally, which would draw a phantom chord from a sulcus's last point back to its first. Make it conditional:
 
 ```js
-        const open = !isClosed(this.bez);
-        const n = this.bez.anchors.length;
-        // ...inside the per-anchor loop, guard each handle:
-        const drawIn  = !(open && i === 0);
-        const drawOut = !(open && i === n - 1);
+        ctx.moveTo(poly[0][0], poly[0][1]);
+        for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i][0], poly[i][1]);
+        if (isClosed(this.bez)) ctx.closePath();   // an open curve has no closing chord
+        ctx.stroke();
 ```
 
-Guard both the handle *drawing* and the handle *hit-testing* (`_hitTest` / the `nearestWithin` call that considers handle positions) with the same two flags, so an endpoint's phantom handle can neither be seen nor grabbed.
+- [ ] **Step 5: Suppress the dead handle at an open curve's endpoints**
 
-- [ ] **Step 5: Verify**
+Handles are drawn for the **selected anchor only**, via `this._handlePx = { out, in }` — there is no per-anchor handle loop. An open curve's `inHandles[0]` and `outHandles[n-1]` sit exactly on their anchor, so rendering them stacks a handle dot on the anchor dot and makes the anchor ungrabbable.
+
+`ui/overlay-geom.js`'s `hitTest` already tolerates a `null` side (`if (hp)`), so set the dead side to `null` rather than adding guards in two places — hit-testing then follows for free.
+
+```js
+        this._handlePx = null;
+        if (this._sel >= 0 && this._sel < this._anchorPx.length) {
+            const a = this._anchorPx[this._sel];
+            const n = this.bez.anchors.length;
+            const open = !isClosed(this.bez);
+            // An open curve's endpoints have exactly one live tangent: anchor 0 has only `out`,
+            // anchor n-1 only `in`. The other handle coincides with the anchor — a dot on a dot.
+            const out = !(open && this._sel === n - 1) ? toPx(this.bez.outHandles[this._sel]) : null;
+            const inp = !(open && this._sel === 0) ? toPx(this.bez.inHandles[this._sel]) : null;
+            this._handlePx = { out, in: inp };
+            ctx.strokeStyle = COLOR.handleLine;
+            ctx.lineWidth = 1;
+            for (const hp of [out, inp]) {
+                if (!hp) continue;
+                ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(hp[0], hp[1]); ctx.stroke();
+                ctx.beginPath(); ctx.arc(hp[0], hp[1], HANDLE_DOT_R, 0, Math.PI * 2);
+                ctx.fillStyle = COLOR.handleFill; ctx.fill();
+                ctx.lineWidth = 1.5; ctx.strokeStyle = COLOR.handleStroke; ctx.stroke();
+                ctx.strokeStyle = COLOR.handleLine; ctx.lineWidth = 1;
+            }
+        }
+```
+
+Also update the file's header comment, which documents the Delete key as keeping `>= 3` anchors — an open curve keeps `>= 2`.
+
+- [ ] **Step 6: Verify**
 
 Run: `npm run test:js`
 Expected: PASS. `test/overlay-geom.test.js` is unaffected (`nearestWithin`/`hitTest` are pure and take explicit point lists).

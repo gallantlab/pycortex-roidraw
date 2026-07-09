@@ -15,15 +15,15 @@
  *                                  a corner anchor moves the two sides independently
  *   - double-click the curve       insert a new anchor there (curve shape preserved)
  *   - double-click an anchor       toggle it between smooth (●, circle) and corner (■, square)
- *   - Delete / Backspace           remove the selected anchor (>= 3 kept)
+ *   - Delete / Backspace           remove the selected anchor (>= 3 kept; >= 2 for an open curve)
  *   - drag empty space / Shift+drag  pan;  scroll  zoom
  *
  *   onEdit(bezier)  — fired whenever the curve changes (host re-derives membership + re-bakes).
  */
 import { fitHomography, applyHomography, invertHomography } from "../core/transform.js";
 import {
-    cloneBezier, evalClosedBezier, moveAnchor, moveHandle, setAnchorSmooth,
-    splitSegment, deleteAnchor, nearestOnClosedBezier,
+    cloneBezier, evalBezier, moveAnchor, moveHandle, setAnchorSmooth,
+    splitSegment, deleteAnchor, nearestOnBezier, isClosed,
 } from "../core/bezier.js";
 import { hitTest, nearestWithin } from "./overlay-geom.js";
 
@@ -43,6 +43,8 @@ const COLOR = {              // editor palette
     handleStroke: "#1f7fa0", anchorStroke: "#0a3a4a", anchorSel: "#fff",
 };
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+// A closed bezier needs 3 anchors to bound an area; an open one needs only 2 to be a curve.
+const minAnchors = (bez) => (isClosed(bez) ? 3 : 2);
 
 export class BezierEditOverlay {
     constructor(adapter, { onEdit } = {}) {
@@ -113,8 +115,8 @@ export class BezierEditOverlay {
     // so caching this lets the per-frame tracking loop just re-map it through the new homography
     // instead of rebuilding + re-sampling the curve every frame.
     _recurve() {
-        this._uvPoly = (this.bez && this.bez.anchors.length >= 3)
-            ? evalClosedBezier(this.bez, CURVE_SAMPLES) : null;
+        this._uvPoly = (this.bez && this.bez.anchors.length >= minAnchors(this.bez))
+            ? evalBezier(this.bez, CURVE_SAMPLES) : null;
     }
 
     // The viewer applies a camera change on its NEXT render frame, so reprojecting synchronously in
@@ -140,7 +142,7 @@ export class BezierEditOverlay {
     // drifts (the curve sits slightly inside the baked outline), but around a single ROI it's
     // near-exact. Falls back to the whole flatmap only if the local region is too sparse on screen.
     reproject() {
-        if (!this.bez || this.bez.anchors.length < 3) { this._clear(); return; }
+        if (!this.bez || this.bez.anchors.length < minAnchors(this.bez)) { this._clear(); return; }
         this.syncRect();
         let c = this._correspondences(this._anchorUvBounds(LOCAL_MARGIN));
         // If the ROI region is too sparse on screen, fall back to the whole flatmap — but ONLY to
@@ -192,7 +194,7 @@ export class BezierEditOverlay {
     _hitCurve(pt) {
         if (!this.Hinv || !this.H) return null;
         const uv = applyHomography(this.Hinv, pt);
-        const hit = nearestOnClosedBezier(this.bez, uv, CURVE_HIT_SAMPLES);
+        const hit = nearestOnBezier(this.bez, uv, CURVE_HIT_SAMPLES);
         if (!hit) return null;
         const px = applyHomography(this.H, hit.point);
         const dx = px[0] - pt[0], dy = px[1] - pt[1];
@@ -323,7 +325,7 @@ export class BezierEditOverlay {
         ctx.beginPath();
         ctx.moveTo(poly[0][0], poly[0][1]);
         for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i][0], poly[i][1]);
-        ctx.closePath();
+        if (isClosed(this.bez)) ctx.closePath();   // an open curve has no closing chord
         ctx.stroke();
 
         this._anchorPx = this.bez.anchors.map(toPx);
@@ -332,12 +334,17 @@ export class BezierEditOverlay {
         this._handlePx = null;
         if (this._sel >= 0 && this._sel < this._anchorPx.length) {
             const a = this._anchorPx[this._sel];
-            const out = toPx(this.bez.outHandles[this._sel]);
-            const inp = toPx(this.bez.inHandles[this._sel]);
+            const n = this.bez.anchors.length;
+            const open = !isClosed(this.bez);
+            // An open curve's endpoints have exactly one live tangent: anchor 0 has only `out`,
+            // anchor n-1 only `in`. The other handle coincides with the anchor — a dot on a dot.
+            const out = !(open && this._sel === n - 1) ? toPx(this.bez.outHandles[this._sel]) : null;
+            const inp = !(open && this._sel === 0) ? toPx(this.bez.inHandles[this._sel]) : null;
             this._handlePx = { out, in: inp };
             ctx.strokeStyle = COLOR.handleLine;
             ctx.lineWidth = 1;
             for (const hp of [out, inp]) {
+                if (!hp) continue;
                 ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(hp[0], hp[1]); ctx.stroke();
                 ctx.beginPath(); ctx.arc(hp[0], hp[1], HANDLE_DOT_R, 0, Math.PI * 2);
                 ctx.fillStyle = COLOR.handleFill; ctx.fill();

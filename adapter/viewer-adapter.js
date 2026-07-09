@@ -63,13 +63,14 @@ export class ViewerAdapter {
 
     /**
      * Create/replace a named overlay layer rendered INTO the surface (so it occludes and morphs
-     * like built-in ROIs). `rois` carries, per ROI, the boundary ring + label vertex + display
-     * color (and, when present, an editable flat-UV `bezier` the adapter renders as a smooth cubic
-     * path); the adapter converts vertices/bezier→uv→layer geometry and strokes it in the ROI color.
+     * like built-in ROIs). `shapes` carries, per shape, its `kind` ("roi" | "sulcus"), a label
+     * vertex, a display color, and an editable flat-UV `bezier` the adapter renders as a cubic
+     * path — closed for an ROI, open (no `Z`) for a sulcus. ROIs may also carry a boundary ring
+     * (`outline`) used as a fallback for files predating the bezier.
      * @param {string} name
-     * @param {Array<{name, color?, outline:[{h,g}], labelVert:{h,g}, bezier?}>} rois
+     * @param {Array<{kind, name, color?, outline?:[{h,g}], labelVert:{h,g}, bezier?}>} shapes
      */
-    setOverlayLayer(_name, _rois) { throw new Error("ViewerAdapter.setOverlayLayer not implemented"); }
+    setOverlayLayer(_name, _shapes) { throw new Error("ViewerAdapter.setOverlayLayer not implemented"); }
 
     /** Show/hide the outlines and labels of a previously-created layer. */
     setLayerVisible(_name, _shapes, _labels) { throw new Error("ViewerAdapter.setLayerVisible not implemented"); }

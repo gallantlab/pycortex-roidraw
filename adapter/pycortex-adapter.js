@@ -17,6 +17,8 @@
  */
 import { ViewerAdapter } from "./viewer-adapter.js";
 import { chaikin } from "../core/geom.js";
+import { isClosed } from "../core/bezier.js";
+import { exportSulciSvg } from "../core/svg-export.js";
 
 const SVGNS = "http://www.w3.org/2000/svg";
 const HEMIS = ["left", "right"];
@@ -38,6 +40,8 @@ const OUTLINE_STROKE_PX = 3;      // ROI colored-outline stroke width, in overla
 const OUTLINE_HALO_PX = 2;        // extra width of the white halo drawn under the colored stroke
 const OUTLINE_FALLBACK_COLOR = "#ffffff"; // stroke when an ROI has no (valid) color
 const LABEL_FONT_PT = 14;         // ROI label font size, in pt
+const CURVE_STROKE_PX = 6;        // sulcus stroke width, from pycortex defaults.cfg [sulci_paths]
+const CURVE_STROKE_OPACITY = 0.6; // ...and its stroke-opacity
 
 // A CSS hex color (#rgb / #rrggbb / #rrggbbaa) or the fallback. ROI colors are our own palette, but an
 // imported file could carry anything, and the value goes into an SVG style attribute — restrict it to
@@ -402,7 +406,7 @@ export class PycortexAdapter extends ViewerAdapter {
 
     // --- overlay layer (occlusion-correct ROI rendering) ------------------------------
 
-    setOverlayLayer(name, rois) {
+    setOverlayLayer(name, shapes) {
         const svgo = this.surface.svg;
         if (!svgo || !svgo.svg || !svgo.posdata || !svgo.depth) return false; // overlay not loaded yet
         const doc = svgo.svg.ownerDocument;
@@ -425,7 +429,7 @@ export class PycortexAdapter extends ViewerAdapter {
             delete svgo[name];
             this._drawn = null;
         }
-        if (!rois.length) { svgo.update(); return true; }
+        if (!shapes.length) { svgo.update(); return true; }
 
         // <g.display_layer> > (shapes group with white-outline paths) + (labels group with texts)
         const layerEl = doc.createElementNS(SVGNS, "g");
@@ -439,28 +443,33 @@ export class PycortexAdapter extends ViewerAdapter {
         layerEl.appendChild(shapesEl);
         layerEl.appendChild(labelsEl);
 
-        for (const roi of rois) {
-            const d = this._roiSvgPath(roi, W, H);
+        for (const shape of shapes) {
+            const d = this._shapeSvgPath(shape, W, H);
             if (d) {
+                const sulcus = shape.kind === "sulcus";
+                const w = sulcus ? CURVE_STROKE_PX : OUTLINE_STROKE_PX;
+                const op = sulcus ? CURVE_STROKE_OPACITY : 1;
                 // White halo under a colored stroke: the halo keeps the outline legible on any
-                // background (colored data or white anatomy), while the color carries the ROI
+                // background (colored data or white anatomy), while the color carries the shape
                 // identity the panel swatch shows. Same path `d`, drawn wider + white underneath.
+                // This halo is a roidraw rendering choice for the LIVE overlay only, and is NOT
+                // part of the exported markup.
                 const halo = doc.createElementNS(SVGNS, "path");
                 halo.setAttribute("d", d);
-                halo.setAttribute("style", "fill:none;stroke:#ffffff;stroke-width:" + (OUTLINE_STROKE_PX + OUTLINE_HALO_PX) + ";stroke-opacity:0.9");
+                halo.setAttribute("style", "fill:none;stroke:#ffffff;stroke-width:" + (w + OUTLINE_HALO_PX) + ";stroke-opacity:0.9");
                 shapesEl.appendChild(halo);
                 const path = doc.createElementNS(SVGNS, "path");
                 path.setAttribute("d", d);
-                path.setAttribute("style", "fill:none;stroke:" + safeColor(roi.color) + ";stroke-width:" + OUTLINE_STROKE_PX + ";stroke-opacity:1");
+                path.setAttribute("style", "fill:none;stroke:" + safeColor(shape.color) + ";stroke-width:" + w + ";stroke-opacity:" + op);
                 shapesEl.appendChild(path);
             }
-            const ptidx = this._labelPtidx(roi.labelVert);
+            const ptidx = this._labelPtidx(shape.labelVert);
             if (ptidx != null) {
                 const t = doc.createElementNS(SVGNS, "text");
                 t.setAttribute("data-ptidx", String(ptidx));
                 t.setAttribute("style", "font-family:Helvetica, sans-serif;font-size:" + LABEL_FONT_PT + "pt;font-weight:bold;" +
                     "font-style:italic;fill:white;fill-opacity:1;text-anchor:middle;filter:url(#dropshadow)");
-                t.appendChild(doc.createTextNode(roi.name)); // createTextNode => no injection
+                t.appendChild(doc.createTextNode(shape.name)); // createTextNode => no injection
                 labelsEl.appendChild(t);
             }
         }
@@ -493,15 +502,16 @@ export class PycortexAdapter extends ViewerAdapter {
         return true;
     }
 
-    // An ROI's white outline as an SVG path in overlay (flat-uv) coords: uv -> (u*W,(1-v)*H).
-    // When the ROI carries a bezier (the editable boundary), emit it as a native cubic path —
-    // genuinely smooth and compact. Otherwise fall back to a Chaikin-smoothed vertex ring (v1 ROIs).
-    _roiSvgPath(roi, W, H) {
-        if (roi.bezier && roi.bezier.anchors && roi.bezier.anchors.length >= 3)
-            return this._bezierSvgPath(roi.bezier, W, H);
-        if (!roi.outline || roi.outline.length < 3) return null;
+    // A shape's outline as an SVG path in overlay (flat-uv) coords. A bezier is emitted as a
+    // native cubic path. Only ROIs have the legacy vertex-ring fallback (v1 files); a sulcus is
+    // always bezier-backed, since it is created from a fitted open curve.
+    _shapeSvgPath(shape, W, H) {
+        if (shape.bezier && shape.bezier.anchors && shape.bezier.anchors.length >= 2)
+            return this._bezierSvgPath(shape.bezier, W, H);
+        if (shape.kind === "sulcus") return null;
+        if (!shape.outline || shape.outline.length < 3) return null;
         const pts = [];
-        for (const o of roi.outline) {
+        for (const o of shape.outline) {
             const uv = this.vertexUV(o);
             if (uv) pts.push([uv[0] * W, (1 - uv[1]) * H]);
         }
@@ -512,17 +522,42 @@ export class PycortexAdapter extends ViewerAdapter {
         return d + "Z";
     }
 
-    // Closed cubic-bezier path from {anchors,inHandles,outHandles} in flat-uv -> viewBox px.
+    // Cubic-bezier path from {anchors,inHandles,outHandles} in flat-uv -> viewBox px. This IS
+    // pycortex's overlay coordinate space, so the `d` we emit here is directly usable in an
+    // overlays.svg. A CLOSED bezier wraps back to anchor 0 and ends with `Z`; an OPEN one (a
+    // sulcus) has n-1 segments and MUST NOT close — the missing `Z` is exactly what distinguishes
+    // a sulcus from an ROI on disk.
     _bezierSvgPath(bez, W, H) {
         const { anchors, inHandles, outHandles } = bez;
         const n = anchors.length;
+        const closed = isClosed(bez);
+        if (n < (closed ? 3 : 2)) return null;
         const P = (uv) => (uv[0] * W).toFixed(2) + "," + ((1 - uv[1]) * H).toFixed(2);
         let d = "M" + P(anchors[0]);
-        for (let i = 0; i < n; i++) {
-            const j = (i + 1) % n;
+        const segs = closed ? n : n - 1;
+        for (let i = 0; i < segs; i++) {
+            const j = closed ? (i + 1) % n : i + 1;
             d += "C" + P(outHandles[i]) + " " + P(inHandles[j]) + " " + P(anchors[j]);
         }
-        return d + "Z";
+        return closed ? d + "Z" : d;
+    }
+
+    /*
+     * Serialize drawn sulci as a pycortex overlays.svg fragment. The `d` strings come from the
+     * SAME uv->viewBox mapping the live overlay uses, which is pycortex's own overlay coordinate
+     * space — so the output drops straight into a subject's overlays.svg. Returns "" if the
+     * overlay isn't loaded yet or there are no sulci.
+     */
+    exportSulciMarkup(sulci) {
+        const svgo = this.surface.svg;
+        if (!svgo || !svgo.svg) return "";
+        const vb = (svgo.svg.getAttribute("viewBox") || "").split(/[\s,]+/).map(parseFloat);
+        const W = (vb.length === 4 && vb[2]) ? vb[2] : svgo.width;
+        const H = (vb.length === 4 && vb[3]) ? vb[3] : svgo.height;
+        return exportSulciSvg(sulci, {
+            pathFor: (bez) => (bez ? this._bezierSvgPath(bez, W, H) : null),
+            ptidxFor: (lv) => this._labelPtidx(lv),
+        });
     }
 
     _labelPtidx(lv) {

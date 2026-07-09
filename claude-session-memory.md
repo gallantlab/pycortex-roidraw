@@ -105,18 +105,36 @@ then bake the demo **from the downloaded asset** so `demo == release` is demonst
 - **The 2026-07-09 CDP live-viewer check predates the export rewrite** — it validated the old broken
   markup, and was NOT re-run before v0.4.1. The bundle is statically verified (the exporter is pure
   and parser-tested); what remains unexercised in a browser is the adapter wiring + the download.
-- **pycortex docs PR #656 was MERGED on 2026-07-09 at 13:33Z** — about ten minutes before the export
-  fix was pushed. (Earlier notes in this file say "open"; they are stale. The repo has no required
-  checks, so a merge lands immediately.) **The published `docs/roidraw.rst` is therefore wrong on two
-  counts**, and needs a follow-up PR:
-  - It says "Merge the fragment into the subject's ``overlays.svg``". That is the data-loss footgun:
-    `SVGOverlay` keys layers by `inkscape:label`, so appending a second `sulci` layer silently
-    replaces the subject's own. It must say *copy the shape groups into the existing
-    `#sulci_shapes`*.
-  - It calls the export a "fragment". Since v0.4.1 it is a standalone, namespace-declaring `<svg>`
-    document — the old bare fragment parsed nowhere.
-  User was offered this follow-up PR at the end of the session; not yet authorized.
 - Lesson recorded in memory as `string-tests-cannot-check-a-format`.
+
+### pycortex docs: #656 merged describing the broken export; fixed by PR #657
+
+**PR #656 was MERGED 2026-07-09 13:33Z** — about ten minutes before the export fix was pushed.
+(Earlier notes in this file say "open"; they are stale, and marked superseded.) So the published
+`docs/roidraw.rst` documented the v0.4.0 exporter, wrong on three counts. **Follow-up
+[PR #657](https://github.com/gallantlab/pycortex/pull/657)** (`claude/fix-sulcus-merge-docs`,
+docs-only, +57/−11) fixes them:
+
+1. **The data-loss instruction.** "Merge the fragment into the subject's `overlays.svg`" — appending
+   a second `<g inkscape:label="sulci">` makes `SVGOverlay.__init__`'s
+   `self.layers[layer.name] = layer` **replace the subject's own sulci layer**. Nothing errors; the
+   subject's sulci just stop existing. Now a `.. warning::` + a worked example: copy the individual
+   `<g inkscape:label="…">` shape groups into the **existing** `#sulci_shapes`.
+2. "Fragment" → standalone, namespace-declaring `<svg>` document (v0.4.1).
+3. Explains the deliberately-empty `sulci_labels` layer and why pycortex wants no `<text>`.
+
+Every API call in the new example was checked against source, not recalled: `db.get_overlay`
+(`database.py:349`), `svg.sulci` (`SVGOverlay.__getattr__`, `svgoverlay.py:99`), `svg.sulci['CS']`
+(`Overlay.__getitem__`, `:338`), `make_figure(..., with_sulci=True)` (`quickflat/view.py:37`).
+
+RST validated with docutils (Sphinx-only roles stripped first). **Note:** the obvious way to do that
+check silently passes everything — a filter meant to ignore Sphinx-role noise swallowed *all*
+messages, so it reported "clean" for a deliberately broken file too. Mutation-checked before
+trusting it. Same disease as the string-matching tests this whole session was about.
+
+`pycortex` runs CI on PRs (`build-docs`, `Check for spelling errors`, `install-from-wheel` ×N) but
+`main` has **no branch protection** (`…/branches/main/protection` → 404), so those checks gate
+nothing and `gh pr merge --auto` lands immediately. Wait for `build-docs` by hand on any `docs/` PR.
 
 ## 2026-07-08/09 — Sulcus drawing (v0.4.0): spec → plan → 12 TDD tasks → SHIPPED (release + demo + docs PR)
 

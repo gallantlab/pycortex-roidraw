@@ -14,7 +14,7 @@
 import test from "node:test";
 import assert from "node:assert";
 import { ROISet } from "../core/roi-model.js";
-import { fitClosedBezier, evalClosedBezier, bezierFromAnchors } from "../core/bezier.js";
+import { fitClosedBezier, evalClosedBezier, bezierFromAnchors, fitOpenBezier, evalOpenBezier, isClosed, moveAnchor, setAnchorSmooth, deleteAnchor, splitSegment } from "../core/bezier.js";
 import { fitHomography, applyHomography, invertHomography } from "../core/transform.js";
 import { selectInPolygon } from "../core/selection.js";
 import { buildOutline } from "../core/outline.js";
@@ -205,4 +205,74 @@ test("PROPERTY: a homography composed with its inverse is the identity", () => {
         tested++;
     }
     assert.ok(tested > TRIALS * 0.8, `expected most draws well-conditioned, only ${tested}/${TRIALS}`);
+});
+
+// A random open polyline with strictly increasing x, so it never self-touches.
+function randomOpenPolyline(rnd, n) {
+    const pts = [];
+    let x = 0;
+    for (let i = 0; i < n; i++) { x += 0.01 + rnd() * 0.05; pts.push([x, rnd()]); }
+    return pts;
+}
+
+test("property: fitOpenBezier pins the traced endpoints", () => {
+    const rnd = rng(0xBEEF);
+    for (let c = 0; c < TRIALS; c++) {
+        const poly = randomOpenPolyline(rnd, 3 + Math.floor(rnd() * 12));
+        const bez = fitOpenBezier(poly);
+        assert.ok(bez, "expected a fit");
+        assert.deepStrictEqual(bez.anchors[0], poly[0]);
+        assert.deepStrictEqual(bez.anchors[bez.anchors.length - 1], poly[poly.length - 1]);
+    }
+});
+
+test("property: evalOpenBezier runs from the first anchor to the last", () => {
+    const rnd = rng(0xF00D);
+    for (let c = 0; c < TRIALS; c++) {
+        const bez = fitOpenBezier(randomOpenPolyline(rnd, 3 + Math.floor(rnd() * 12)));
+        const poly = evalOpenBezier(bez, 8);
+        const last = bez.anchors[bez.anchors.length - 1];
+        assert.deepStrictEqual(poly[0], bez.anchors[0]);
+        assert.deepStrictEqual(poly[poly.length - 1], [last[0], last[1]]);
+    }
+});
+
+test("property: every edit op preserves the closed flag", () => {
+    const rnd = rng(0x1234);
+    for (let c = 0; c < TRIALS; c++) {
+        const bez = fitOpenBezier(randomOpenPolyline(rnd, 4 + Math.floor(rnd() * 8)));
+        const n = bez.anchors.length;
+        const i = Math.floor(rnd() * n);
+        assert.strictEqual(isClosed(moveAnchor(bez, i, [rnd(), rnd()])), false);
+        assert.strictEqual(isClosed(setAnchorSmooth(bez, i, true)), false);
+        assert.strictEqual(isClosed(deleteAnchor(bez, i)), false);
+        assert.strictEqual(isClosed(splitSegment(bez, Math.floor(rnd() * (n - 1)), 0.5)), false);
+    }
+});
+
+test("property: an open curve's endpoints are always corners after a fit", () => {
+    const rnd = rng(0x5EED);
+    for (let c = 0; c < TRIALS; c++) {
+        const bez = fitOpenBezier(randomOpenPolyline(rnd, 3 + Math.floor(rnd() * 12)));
+        assert.strictEqual(bez.smooth[0], false);
+        assert.strictEqual(bez.smooth[bez.smooth.length - 1], false);
+    }
+});
+
+// Regression guard: deleteAnchor once promoted an interior anchor to endpoint while leaving its
+// `smooth:true` flag and a live off-anchor handle behind. An open curve's endpoints are corners
+// no matter HOW the curve got to its current anchor list, not just when freshly fit.
+test("property: an open curve's endpoints stay corners after any single delete", () => {
+    const rnd = rng(0xC0FFEE);
+    const eq = (p, q) => p[0] === q[0] && p[1] === q[1];
+    for (let c = 0; c < TRIALS; c++) {
+        const bez = fitOpenBezier(randomOpenPolyline(rnd, 4 + Math.floor(rnd() * 10)));
+        if (bez.anchors.length <= 2) continue;               // at the floor, delete is a no-op
+        const d = deleteAnchor(bez, Math.floor(rnd() * bez.anchors.length));
+        const n = d.anchors.length;
+        assert.strictEqual(d.smooth[0], false, "first anchor must be a corner");
+        assert.strictEqual(d.smooth[n - 1], false, "last anchor must be a corner");
+        assert.ok(eq(d.inHandles[0], d.anchors[0]), "unused in-handle must sit on the first anchor");
+        assert.ok(eq(d.outHandles[n - 1], d.anchors[n - 1]), "unused out-handle must sit on the last anchor");
+    }
 });

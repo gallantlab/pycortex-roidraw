@@ -1,12 +1,12 @@
-# Drawing sulci and gyri — design
+# Drawing sulci — design
 
 _2026-07-08_
 
 ## Goal
 
-Let a roidraw user draw **sulci** and **gyri** in addition to ROIs, and store them the way
-pycortex already stores sulci: as open, unfilled cubic-bezier `<path>` elements in an
-`overlays.svg` layer, carrying no vertex data.
+Let a roidraw user draw **sulci** in addition to ROIs, and store them the way pycortex already
+stores sulci: as open, unfilled cubic-bezier `<path>` elements in an `overlays.svg` layer,
+carrying no vertex data.
 
 ## Background: how pycortex stores sulci
 
@@ -39,44 +39,42 @@ Established by reading `/Users/gallant/CLAUDE/PYCORTEX/pycortex-src`:
   cKDTree over flat vertex coords and writes `data-ptidx` onto **label text elements** only.
 - A named sulcus commonly has **two disjoint `<path>` children** under one `inkscape:label` —
   one per hemisphere (e.g. `CaS` has `path3451` and `path3453`).
-- **"Gyri" does not exist** anywhere in pycortex. No layer, class, config section, or storage.
 
 ## Key decisions
 
-1. **Storage is pycortex-native.** Sulci and gyri are stored and exported as `overlays.svg`
-   markup, not as a roidraw JSON format. `quickflat.add_sulci`, the WebGL viewer, and Inkscape
-   read the output natively.
+1. **Storage is pycortex-native.** Sulci are stored and exported as `overlays.svg` markup, not
+   as a roidraw JSON format. `quickflat.add_sulci`, the WebGL viewer, and Inkscape read the
+   output natively.
 
-2. **Gyri are an invention, mirrored on sulci.** pycortex models no gyri. We emit a `gyri`
-   layer with identical structure to `sulci`. This slots into pycortex's layer list without
-   modifying pycortex, but **nothing in pycortex will read it** until pycortex is taught to.
-   Recorded here so the limitation is not rediscovered later.
-
-3. **ROIs are untouched.** They keep the closed bezier, the enclosed-vertex `vertexset-v2`
+2. **ROIs are untouched.** They keep the closed bezier, the enclosed-vertex `vertexset-v2`
    JSON, and the existing export. No format bump, no migration; v1/v2 files keep importing.
 
-4. **Duplicate names are allowed and are the intended workflow.** Users trace a named sulcus
+3. **Duplicate names are allowed and are the intended workflow.** Users trace a named sulcus
    sequentially — left hemisphere, then right — as two separate curves given the same name. On
-   export, same-named curves of the same kind merge into a single
-   `<g inkscape:label="NAME">` with one `<path>` child per curve. This reproduces pycortex's
-   own two-sub-path convention. Names are therefore **not** unique keys; the internal `id`
-   remains the unique key.
+   export, same-named sulci merge into a single `<g inkscape:label="NAME">` with one `<path>`
+   child per curve. This reproduces pycortex's own two-sub-path convention. Names are therefore
+   **not** unique keys; the internal `id` remains the unique key.
 
-5. **The bezier is the source of truth**, as it already is for ROIs. Because sulci store no
+4. **The bezier is the source of truth**, as it already is for ROIs. Because sulci store no
    vertex membership, there is no re-derivation step and no consistency risk between a curve
    and a derived vertex set — the entire class of bug that `deriveRoiFromLasso`'s
    zero-enclosure guard exists to handle simply does not arise.
+
+5. **Gyri are out of scope.** Considered and rejected: pycortex models no gyri anywhere (no
+   layer, class, config section, or storage; the word appears only as anatomical prose in
+   docstrings). A `gyri` layer would be an invention that no pycortex tool reads. Recorded so
+   the question is not reopened without new motivation.
 
 ## Data model
 
 `core/roi-model.js` (`ROISet`) becomes a shape collection. Each shape gains a `kind`:
 
 ```js
-kind: "roi" | "sulcus" | "gyrus"
+kind: "roi" | "sulcus"
 ```
 
-| field       | roi                          | sulcus / gyrus |
-|-------------|------------------------------|----------------|
+| field       | roi                          | sulcus |
+|-------------|------------------------------|--------|
 | `id`        | unique int                   | unique int |
 | `name`      | user string (unique-ish)     | user string, **duplicates expected** |
 | `color`     | palette                      | palette |
@@ -85,8 +83,8 @@ kind: "roi" | "sulcus" | "gyrus"
 | `outline`   | ordered closed vertex ring   | — (absent) |
 | `labelVert` | `{h,g}` centroid-nearest     | `{h,g}` nearest the curve's parametric midpoint |
 
-`labelVert` exists for sulci/gyri solely to place the `data-ptidx` text sprite — the one
-path→vertex mapping pycortex sanctions (`set_coords`). It is not a claim about membership.
+`labelVert` exists for sulci solely to place the `data-ptidx` text sprite — the one path→vertex
+mapping pycortex sanctions (`set_coords`). It is not a claim about membership.
 
 The `<g id="sulci_labels">` group is empty in pycortex's own fixture, but the group exists and
 `Overlay` reads it, so emitting labels there is host-native, not an extension.
@@ -130,10 +128,10 @@ curveFromTrace(adapter, pts) -> { bezier, labelVert } | null
 
 The stroke arrives in screen px and must be stored in view-independent flat-uv. **No new adapter
 method is required**: `core/transform.js` already fits a homography between uv and px at the
-current flat view, exactly as `ui/bezier-edit-overlay.js` does it —
-`fitHomography(src, dst)` over the `(uv, px)` correspondences from the adapter's existing
-`projectVerticesInUvBounds`, then `invertHomography` to map px → uv. At full flat the flatmap is
-one plane, so the homography is exact.
+current flat view, exactly as `ui/bezier-edit-overlay.js` does it — `fitHomography(src, dst)`
+over the `(uv, px)` correspondences from the adapter's existing `projectVerticesInUvBounds`,
+then `invertHomography` to map px → uv. At full flat the flatmap is one plane, so the homography
+is exact.
 
 So: stroke px → uv (via `Hinv`) → `fitOpenBezier` → the curve's parametric midpoint →
 `nearestVertexTo(adapter, uv)` for the label.
@@ -160,24 +158,20 @@ The uv → viewBox mapping `uv → (u*W, (1-v)*H)` is unchanged — it already *
 overlay coordinate space, so nothing needs converting.
 
 Live rendering keeps the **single** roidraw-owned `drawnrois` display layer that
-`setOverlayLayer` already creates; shapes of all three kinds live in it, styled per shape. Only
-*export* splits into `sulci` and `gyri` layers. This keeps teardown, visibility toggling, and
-the label-sprite lifecycle exactly as they are today.
+`setOverlayLayer` already creates; shapes of both kinds live in it, styled per shape. Only
+*export* emits a `sulci` layer. This keeps teardown, visibility toggling, and the label-sprite
+lifecycle exactly as they are today.
 
 `setOverlayLayer` picks stroke weights per kind:
 
-| kind          | stroke-width | stroke-opacity | closes with `Z` |
-|---------------|--------------|----------------|-----------------|
-| roi           | `OUTLINE_STROKE_PX` (3, existing) | 1 | yes |
-| sulcus, gyrus | `CURVE_STROKE_PX` (6, from `[sulci_paths]`) | 0.6 | no |
+| kind   | stroke-width | stroke-opacity | closes with `Z` |
+|--------|--------------|----------------|-----------------|
+| roi    | `OUTLINE_STROKE_PX` (3, existing) | 1 | yes |
+| sulcus | `CURVE_STROKE_PX` (6, from `[sulci_paths]`) | 0.6 | no |
 
-The existing white halo under the colored stroke is retained for all kinds; it keeps a curve
+The existing white halo under the colored stroke is retained for both kinds; it keeps a curve
 legible over colored data. The halo is a roidraw rendering choice and does **not** appear in the
 exported markup, which uses pycortex's own `[sulci_paths]` styling.
-
-Gyri render identically to sulci in the live viewer; they are distinguished by layer, name, and
-panel row, not by stroke style. (Keeping them visually identical avoids inventing a second
-styling convention on top of the layer we are already inventing.)
 
 ## Editing
 
@@ -198,31 +192,31 @@ Audited by reading the tree; each of these hard-codes a closed ring today.
 | `ui/bezier-edit-overlay.js:116` | `_uvPoly` built only when `anchors.length >= 3` | `>= 2` for open |
 | `ui/bezier-edit-overlay.js` | calls `nearestOnClosedBezier` directly | dispatch on `closed` |
 | `adapter/…:_bezierSvgPath` | always wraps to anchor 0, always appends `Z` | branch on `closed` |
-| `adapter/…:_roiSvgPath` | `outline.length < 3` fallback path | curves have no `outline`; bezier-only |
-| `ui/draw-panel.js:118` | row count is `r.left.length + r.right.length` | curves have no `left`/`right` — show anchor count instead |
-| `ui/draw-panel.js:126` | edit enabled iff `r.bezier` | unchanged (curves always have one) |
-| `index.js:_applyEdit` | re-derives vertices via `roiFromBezier` | skip for curves; store the bezier only |
+| `adapter/…:_roiSvgPath` | `outline.length < 3` fallback path | sulci have no `outline`; bezier-only |
+| `ui/draw-panel.js:118` | row count is `r.left.length + r.right.length` | sulci have no `left`/`right` — show anchor count instead |
+| `ui/draw-panel.js:126` | edit enabled iff `r.bezier` | unchanged (sulci always have one) |
+| `index.js:_applyEdit` | re-derives vertices via `roiFromBezier` | skip for sulci; store the bezier only |
 | `index.js:exportJSON` | guards on `this.rois.length` | must count ROIs specifically, not all shapes |
 | `index.js:_finishLasso` | aborts on `0 vertices selected` | trace has its own abort condition |
 | `core/roi-model.js` `loadJSON` | every entry becomes an ROI | tag imported entries `kind:"roi"` |
 
 ## UI
 
-`ui/draw-panel.js` gains a three-way **kind selector** at the top of the panel — a segmented
-control, `ROI | Sulcus | Gyrus` — that sets the active draw tool. It drives one thing:
+`ui/draw-panel.js` gains a two-way **kind selector** at the top of the panel — a segmented
+control, `ROI | Sulcus` — that sets the active draw tool. It drives one thing:
 
 - **ROI** → `LassoOverlay` in lasso mode → `deriveRoiFromLasso` (closed, selects vertices).
-- **Sulcus / Gyrus** → `LassoOverlay` in trace mode → `curveFromTrace` (open, no selection).
+- **Sulcus** → `LassoOverlay` in trace mode → `curveFromTrace` (open, no selection).
 
-The shape list becomes a single list showing all three kinds, each row prefixed by a kind glyph
-so a `CS` sulcus and a `CS` ROI are distinguishable. Rows keep the existing color swatch, edit
+The shape list becomes a single list showing both kinds, each row prefixed by a kind glyph so a
+`CS` sulcus and a `CS` ROI are distinguishable. Rows keep the existing color swatch, edit
 button, and delete button. The count column shows enclosed-vertex count for ROIs and anchor
-count for curves.
+count for sulci.
 
 The status line already branches on mode; it gains a trace-mode string
 ("Drag along the sulcus · ✎ to edit · scroll to zoom · Shift+drag to pan").
 
-Drawing stays **flat-only** for all kinds — `DrawModeMachine` is unchanged, and the homography
+Drawing stays **flat-only** for both kinds — `DrawModeMachine` is unchanged, and the homography
 that `curveFromTrace` depends on is only valid at full flat.
 
 ## Export
@@ -230,10 +224,10 @@ that `curveFromTrace` depends on is only valid at full flat.
 Two separate outputs, because they are two genuinely different formats:
 
 - **`Export ROIs (JSON)`** — unchanged `vertexset-v2`, emitted only when ROIs exist.
-- **`Export sulci/gyri (SVG)`** — an `overlays.svg`-compatible fragment, emitted only when
-  curves exist.
+- **`Export sulci (SVG)`** — an `overlays.svg`-compatible fragment, emitted only when sulci
+  exist.
 
-The SVG fragment groups by `(kind, name)`:
+The SVG fragment groups sulci by `name`:
 
 ```xml
 <g inkscape:groupmode="layer" id="sulci" inkscape:label="sulci" style="display:inline">
@@ -250,7 +244,7 @@ The SVG fragment groups by `(kind, name)`:
 ```
 
 Two `<path>` children under one `inkscape:label="CS"` is precisely how `CaS` appears in
-pycortex's own `S1/overlays.svg`. A `gyri` layer with identical structure follows.
+pycortex's own `S1/overlays.svg`.
 
 Coordinates are viewBox px, the space `_bezierSvgPath` already emits. Names go through XML
 text-escaping (a name is user input and lands in both an attribute and a text node).
@@ -260,14 +254,14 @@ a Python-side round-trip. The fragment is designed to be pasted or merged by a s
 
 ## Non-goals
 
+- **Gyri.** See decision 5.
 - Editing the subject's *existing* pycortex sulci (the live viewer already loads them into
   `svgo.sulci`; adopting them into roidraw's editable model is a separate feature).
-- Importing sulci/gyri back from SVG. Export is one-way for now.
-- Teaching pycortex to read a `gyri` layer.
-- Any vertex membership, mask, or ribbon for sulci/gyri. Deliberately excluded: a radius in
-  flat-uv units does not correspond to a constant amount of cortex (flattening distortion —
-  cf. `examples/surface_analyses/plot_tissots_indicatrix.py`). Doing it honestly requires
-  geodesic distance on the fiducial surface, which the adapter does not expose.
+- Importing sulci back from SVG. Export is one-way for now.
+- Any vertex membership, mask, or ribbon for sulci. Deliberately excluded: a radius in flat-uv
+  units does not correspond to a constant amount of cortex (flattening distortion — cf.
+  `examples/surface_analyses/plot_tissots_indicatrix.py`). Doing it honestly requires geodesic
+  distance on the fiducial surface, which the adapter does not expose.
 
 ## Testing
 
@@ -287,13 +281,11 @@ Follows the project's existing test-first practice (see `TESTING.md`).
   `test/fake-adapter.js` are untouched. Stated explicitly because an earlier draft of this design
   added `nearestVertexAt` to `ViewerAdapter.REQUIRED`; it does not.
 - New `test/svg-export.test.js` — pure export function, no DOM: open paths carry **no** `Z`;
-  closed paths do; same-named same-kind curves merge into one `<g>` with one `<path>` each;
-  `sulci` and `gyri` land in separate layers; a name containing `&`/`<`/`"` is escaped in both
-  the attribute and the text node.
+  closed paths do; same-named sulci merge into one `<g>` with one `<path>` each; a name
+  containing `&`/`<`/`"` is escaped in both the attribute and the text node.
 
 ## Risks
 
-- **The `gyri` layer is read by nothing.** Accepted and documented above.
 - **Open-curve edit UX at endpoints** is the fiddliest part (one handle, always a corner). It
   is also the part unit tests cover least, since the edit overlay is browser code. The existing
   honest gap in `TESTING.md` applies.
@@ -301,7 +293,7 @@ Follows the project's existing test-first practice (see `TESTING.md`).
   rendering choice; this design does not change it, and takes `defaults.cfg` values only for the
   *sulcal* weights. Noted so the mismatch is not later read as a bug.
 - **Duplicate names weaken the panel.** Two rows both reading `CS` are only distinguishable by
-  position and vertex/anchor count. This is the accepted cost of the sequential both-hemispheres
+  position and anchor count. This is the accepted cost of the sequential both-hemispheres
   workflow. Mitigation: the panel row keeps its per-shape color swatch, and the edit highlight
   disambiguates which one is selected.
 - **The homography is only valid at full flat.** `curveFromTrace` runs on a strictly flat

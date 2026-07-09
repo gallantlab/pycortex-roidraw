@@ -36,10 +36,23 @@
 .roidraw-status--draw  { color: #ffcc00; }
 .roidraw-status--inspect { color: #6cf; }
 
+.roidraw-tools { display: flex; gap: 0; margin: 6px 0 8px; }
+.roidraw-tools__btn {
+    flex: 1;
+    width: auto;                   /* override .roidraw-panel button { width: 100% } */
+    margin: 0;                     /* override .roidraw-panel button { margin-bottom: 6px } */
+    padding: 5px 8px; font: inherit; cursor: pointer;
+    background: #2a2a2a; color: #ddd; border: 1px solid #444;
+}
+.roidraw-tools__btn:first-child { border-radius: 3px 0 0 3px; }
+.roidraw-tools__btn:last-child { border-radius: 0 3px 3px 0; border-left: none; }
+.roidraw-tools__btn--on { background: #ffcc00; color: #111; border-color: #ffcc00; }
+
 .roidraw-list { margin-bottom: 6px; }
 .roidraw-list__empty { color: #777; }
 .roidraw-roi { display: flex; align-items: center; gap: 4px; margin: 2px 0; }
 .roidraw-roi__swatch { width: 10px; height: 10px; display: inline-block; border-radius: 2px; }
+.roidraw-roi__kind { width: 1.2em; text-align: center; opacity: 0.75; }
 .roidraw-roi__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .roidraw-roi__count { color: #999; }
 .roidraw-roi__editbtn {

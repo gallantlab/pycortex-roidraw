@@ -260,13 +260,15 @@ it can't.
 ## Requirements
 
 - **Node** ≥ 18 to build/test the JS.
-- **Python 3** for `bake.py` / `fixups.py` (stdlib only). The dynamic example
+- **Python 3** for `bake.py` (stdlib only). The dynamic example
   (`examples/make_viewer.py`) additionally needs **pycortex** (Python ≤ 3.12) in `.venv`.
 
-## Extras
+## Not here
 
-- [`fixups.py`](fixups.py) — corrects long-standing pycortex static-viewer UI bugs in a built
-  viewer's HTML: help-menu key casing, `#helpmenu` centering, help-menu font, a "press h for help"
-  hint, and Firefox scroll-wheel zoom. Unit-tested; idempotent.
-- [`add_help.py`](add_help.py) — injects a static help menu into older viewers that shipped without
-  one (a feature sibling to `bake.py`, not a bug fix). Unit-tested.
+General pycortex **viewer-modernization** tooling — `reengine.py` (re-emit a static viewer's engine
+from a current pycortex checkout), `fixups.py` (correct long-standing static-viewer UI bugs),
+`add_help.py` (inject a help menu into viewers built without one), and `convert_huth.py` — used to
+live in this repo. They were moved out on 2026-07-13, because this repo is the ROI-drawing project
+and that tooling applies to any pycortex viewer. They now live in `jackgallant/pycortex-viewer-tools`.
+
+`bake.py` stayed: it injects the ROI-drawing bundle, so it *is* part of this project.

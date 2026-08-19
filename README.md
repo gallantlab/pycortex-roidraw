@@ -285,6 +285,41 @@ it can't.
 - **Python 3** for `bake.py` (stdlib only). The dynamic example
   (`examples/make_viewer.py`) additionally needs **pycortex** (Python ≤ 3.12) in `.venv`.
 
+## Upstreaming into pycortex
+
+This repo is written to be **incorporated into pycortex itself** (proposed in
+[gallantlab/pycortex#642](https://github.com/gallantlab/pycortex/pull/642)) with a diff that reads
+native there. The whole PR is generated mechanically:
+
+```bash
+npm run build
+python upstream/stage_into_pycortex.py /path/to/pycortex   # on a branch; `git diff` = the PR
+```
+
+That stages four things, modeled line-for-line on pycortex's merged pattern for optional webgl
+features (the guided-tour PR, [#660](https://github.com/gallantlab/pycortex/pull/660)):
+
+| In pycortex | What |
+| --- | --- |
+| `cortex/webgl/resources/js/roidraw.js` | the built bundle, global `roidraw` (lowercase, like `mriview`/`svgoverlay`) |
+| `cortex/webgl/template.html` | a `{% if roidraw %}` block: the script tag + the same one-line `window.ROIDraw.autoAttach()` bootstrap `bake.py` injects |
+| `cortex/webgl/view.py` | `make_static(..., roidraw=False)` — kwarg, docstring, template flag |
+| `cortex/tests/test_webgl_roidraw.py` | renders the template with the flag on/off (mirrors `test_webgl_tour.py`) |
+
+Then `cortex.webgl.make_static(outpath, data, roidraw=True)` bakes drawing into any static viewer.
+
+Deliberate choices, for pycortex compatibility:
+
+- **One self-contained file, CSS inside the JS.** pycortex's `html_embed` pipeline
+  (`cortex/webgl/htmlembed.py`) parses stylesheets with a non-nesting brace regex, so a separate
+  `roidraw.css` could be silently mangled the moment it grew a nested at-rule; and `_embed_js`
+  regex-rewrites `new Worker(...)` / `attr('src', ...)` inside every embedded script — the bundle
+  contains neither pattern, and `test/test_upstream.py` pins that it never grows one.
+- The staging script's patches are **transactional and loud**: if pycortex drifts and an anchor
+  goes missing or ambiguous, nothing is written and the error names the anchor.
+- The roidraw **source** stays modular ES (this repo's tests depend on it); what pycortex receives
+  is the single script-tag-ready file its viewers load, like every other `resources/js/*.js`.
+
 ## Not here
 
 General pycortex viewer-maintenance tooling (`reengine.py`, `fixups.py`, `add_help.py`,

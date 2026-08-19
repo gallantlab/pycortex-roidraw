@@ -40,6 +40,10 @@ test("the bundle loads in a browser-like sandbox and exposes window.ROIDraw", ()
     }
     // the teardown API must ship so a viewer can detach/re-attach without leaking
     assert.strictEqual(typeof win.ROIDraw.ROIDrawer.prototype.destroy, "function", "ROIDrawer needs a destroy()");
+    // the IIFE's global is `roidraw`, lowercase — pycortex's module-global convention (mriview,
+    // svgoverlay, ...), so the file reads native when staged into a pycortex viewer.
+    assert.strictEqual(typeof ctx.roidraw, "object", "expected a pycortex-style `roidraw` module global");
+    assert.strictEqual(ctx.roidraw.attach, win.ROIDraw.attach, "roidraw and window.ROIDraw must be the same API");
 });
 
 test("the bundle inlines its CSS (single self-contained file, no external fetch)", () => {

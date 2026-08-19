@@ -2,6 +2,41 @@
 
 _Current status file. Most recent session at top._
 
+## 2026-08-19 (later) — Alignment corrected: roidraw conforms to pycortex; upstreaming kit built
+
+Jack clarified the review's part 3: **roidraw should conform to pycortex, pycortex is never
+changed** — the goal is that the incorporation PR (proposed in gallantlab/pycortex#642) is easy
+and native. Superseded the report's earlier upstream-tooling suggestions. **Committed + pushed to
+`main` on the session's second "clean".**
+
+**Built `upstream/` — the PR generator.** `python upstream/stage_into_pycortex.py <checkout>`
+stages the exact 4-part diff, modeled line-for-line on the tour PR #660 (`{% if flag %}` template
+block + `make_static` kwarg): `resources/js/roidraw.js` (the bundle), template block (script tag +
+the same `window.ROIDraw.autoAttach()` line bake.py injects), `view.py` `roidraw=False`
+kwarg/docstring/generate-arg, and `cortex/tests/test_webgl_roidraw.py` (mirrors
+test_webgl_tour.py; passes `tour=False` too so it survives #660 merging first). Patches are
+transactional + fail loudly naming a missing/ambiguous anchor. End state upstream:
+`make_static(out, data, roidraw=True)`.
+
+**Real-pycortex gotchas discovered (now encoded in the kit + tests):**
+- `cortex/webgl/htmlembed.py` regex-rewrites `new Worker(` and `attr('src',` inside EVERY embedded
+  script, and `_embed_css` parses CSS with a non-nesting brace regex → roidraw ships ONE
+  self-contained JS (CSS inside, deliberately); `test/test_upstream.py` guards both bundle patterns.
+- In `view.py`, the `title` docstring block AND `leapmotion=True,` each occur TWICE (make_static +
+  the dynamic-viewer path). Anchors carry context; unit fixtures reproduce the double-occurrence.
+
+**Bundle global renamed** `ROIDrawBundle` → `roidraw` (lowercase, like mriview/svgoverlay) so the
+file reads native in pycortex; `window.ROIDraw` unchanged (documented API — README, bake.py, the
+merged docs/roidraw.rst). bundle.test.js asserts `roidraw.attach === window.ROIDraw.attach`.
+
+**Verified:** 174 JS + 19 Python tests green, lint clean. Against a disposable worktree of
+pycortex `origin/main` @ `5af26a86` (removed after): staged diff == tour-PR shape; rerun = total
+no-op; patched view.py parses; real-Tornado render of the patched template includes script+bootstrap
+with roidraw=True and is byte-clean with False; renamed-global bundle re-passed the full headless
+Firefox smoke, `typeof roidraw === "object"` live in the page. `pycortex-src` itself untouched
+(worktree list back to just main). Docs: README "Upstreaming into pycortex" section, TESTING.md
+upstream-staging section; report artifact section rewritten + republished.
+
 ## 2026-08-19 — Full code review per CODE.REVIEW.md: style gate, doc reconciliation, redundancy cut
 
 Review of the whole tree against `~/CLAUDE/PYCORTEX/CODE.REVIEW.md` (style conformity, language

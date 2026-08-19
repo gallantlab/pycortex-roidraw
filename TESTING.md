@@ -48,6 +48,20 @@ tests pin that the restatements are gone:
 every keyboard handler (controller Shift/Esc and the editor's Delete): a file input, button,
 checkbox or slider holding focus must not swallow a gesture.
 
+### Upstream staging — unit (pure patch functions) + embed-safety guards
+`upstream/stage_into_pycortex.py` generates the pycortex incorporation PR's diff.
+`test/test_upstream.py` drives its pure patch functions against verbatim fixtures of the pycortex
+anchor regions: the template block lands between the `python_interface` block and
+`{% block javascripts %}`; the `view.py` kwarg/docstring/generate-arg insertions land in order and
+only in `make_static` (both the docstring and the `tpl.generate` anchors appear twice in the real
+file — the fixtures reproduce that); reruns are no-ops; a missing anchor exits loudly having
+written nothing. It also pins that the built bundle stays free of the two patterns
+`cortex/webgl/htmlembed.py` rewrites inside every embedded script (`new Worker(`,
+`attr('src', …)`) — the reason the CSS rides inside the JS is the same module's non-nesting CSS
+brace parser. The shipped `upstream/test_webgl_roidraw.py` needs an importable `cortex`, so it runs
+in pycortex's CI, not here; its exact assertions were reproduced against the real patched template
+with Tornado (pycortex's template engine) when the kit was built.
+
 ### Sulcus SVG export — unit (pure writer) + a real XML parser
 `core/svg-export.js` is the pure writer for the sulci layer of an `overlays.svg`.
 

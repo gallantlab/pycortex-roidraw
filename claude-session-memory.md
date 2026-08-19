@@ -6,8 +6,7 @@ _Current status file. Most recent session at top._
 
 Jack clarified the review's part 3: **roidraw should conform to pycortex, pycortex is never
 changed** — the goal is that the incorporation PR (proposed in gallantlab/pycortex#642) is easy
-and native. Superseded the report's earlier upstream-tooling suggestions. **Committed + pushed to
-`main` on the session's second "clean".**
+and native. Superseded the report's earlier upstream-tooling suggestions. **Committed + pushed as `main` @ `9f8f8e4`.**
 
 **Built `upstream/` — the PR generator.** `python upstream/stage_into_pycortex.py <checkout>`
 stages the exact 4-part diff, modeled line-for-line on the tour PR #660 (`{% if flag %}` template

@@ -200,22 +200,29 @@ Three layers; only the adapter knows the host viewer.
 
 ```
 core/      pure JS — no DOM, no THREE, no host globals (unit-tested under node)
-  geom.js        point-in-polygon, RDP simplify, Chaikin smooth, ndc↔pixel, centroid
+  geom.js        point-in-polygon, bounds, RDP simplify, Chaikin smooth, ndc↔pixel, centroid
   selection.js   projected vertices + polygon → selected vertex set (works in px OR uv)
   outline.js     polygon → ordered boundary ring of vertices (+ label vertex)
-  bezier.js      fit an editable bezier — closed (ROI ring) or open (sulcus trace) — and edit it
+  bezier.js      fit an editable bezier — closed (ROI ring) or open (sulcus trace) — sample it,
+                 edit it; owns the segment topology (segCount/segControls/minAnchors) that the
+                 samplers, the editor and the adapter's path writer all read
   transform.js   uv↔px homography (place/grab edit knots; map a traced stroke back to uv)
-  shape-model.js the shape collection (ROIs + sulci) + the vertexset-v2 ROI export/import
+  shape-model.js the shape collection (ROIs + sulci), default names, the vertexset-v2 ROI export/import
   svg-export.js  pure writer for pycortex overlays.svg sulci markup (paths only, never labels)
-  draw-mode.js   the flat-only Draw state machine (the "reached flat" latch)
+  draw-mode.js   the flat-only Draw state machine (the "reached flat" latch) + the MODE names
+  timer-set.js   tracked setTimeouts that one destroy() cancels (controller + adapter share it)
 
 adapter/   the ViewerAdapter CONTRACT + one host implementation
-  viewer-adapter.js     documented interface the core/ui depend on
+  viewer-adapter.js     documented interface the core/ui depend on, + uvPxCorrespondences()
+                        (the one place projectVerticesInUvBounds is flattened for a homography fit)
   pycortex-adapter.js   the ONLY file that touches pycortex internals
 
 ui/        host-agnostic DOM components (talk only to core + adapter)
+  overlay-canvas.js  base class: the transparent canvas over the surface (size/position sync,
+                     event→px, teardown) that both overlays below extend
   lasso-overlay.js  bezier-edit-overlay.js  draw-panel.js  mode-toggle.js  roidraw.css
   overlay-geom.js   pure hit-testing math for the edit overlay (no DOM; unit-tested)
+  dom-utils.js      isTextEntry(): the one "is the user typing?" rule every key handler uses
 
 draw-pipeline.js  ROI: lasso → select → fit bezier → re-derive membership.
                   Sulcus: trace → px→uv via homography → fit open bezier → label vertex
@@ -240,22 +247,37 @@ viewBox coords, label `data-ptidx` convention, control-panel internals) is quara
 ## Building
 
 ```bash
-npm install        # one-time (esbuild)
+npm install        # one-time (esbuild + eslint)
 npm run build      # -> dist/roidraw.bundle.js
 ```
 
 ## Testing
 
 ```bash
-npm test           # builds the bundle, then runs the JS suite (node) + Python tooling tests
+npm test           # lints, builds the bundle, then runs the JS suite (node) + Python tooling tests
+npm run lint       # eslint alone (eslint.config.js: recommended rules + this repo's conventions)
 ```
 
 The JS suite layers property-based geometry invariants (closed *and* open curves), the Draw-mode
 state machine, the draw pipeline (driven headless against a synthetic-surface adapter), the pure
-`overlays.svg` writer, the edit-overlay hit-testing, an adapter-contract guard, a host preflight,
-and a smoke test of the built bundle. CI (`.github/workflows/test.yml`) runs it on every push. See
+`overlays.svg` writer, the edit-overlay hit-testing, the bezier segment-topology agreement between
+the samplers/editor/adapter path writer, an adapter-contract guard, a host preflight, and a smoke
+test of the built bundle. CI (`.github/workflows/test.yml`) runs it on every push. See
 [TESTING.md](TESTING.md) for what each layer guarantees — and the gaps (live-browser integration)
 it can't.
+
+### Conventions
+
+- **JS**: ES modules, `const`/`let`, 4-space indent, double quotes, semicolons; `camelCase` for
+  functions and variables, `UPPER_SNAKE` for module constants, a leading `_` for private methods
+  and for deliberately unused parameters. A file starts with a block comment saying what it owns
+  and what it must not know about. `npm run lint` enforces the mechanical part.
+- **Python** (`bake.py`, `examples/`, `test/test_*.py`): PEP 8, stdlib only, `unittest`, the same
+  4-space/snake_case conventions as pycortex itself.
+- **One definition per rule.** Anything two code paths must agree on — the bezier's segment
+  topology, the overlay's coordinate mapping, the "is the user typing?" test, default shape names,
+  the timer bookkeeping — lives in exactly one module and is imported from there (see the
+  Architecture notes above). If you find the same rule restated in two places, that is the bug.
 
 ## Requirements
 
@@ -265,10 +287,7 @@ it can't.
 
 ## Not here
 
-General pycortex **viewer-modernization** tooling — `reengine.py` (re-emit a static viewer's engine
-from a current pycortex checkout), `fixups.py` (correct long-standing static-viewer UI bugs),
-`add_help.py` (inject a help menu into viewers built without one), and `convert_huth.py` — used to
-live in this repo. They were moved out on 2026-07-13, because this repo is the ROI-drawing project
-and that tooling applies to any pycortex viewer. They now live in `jackgallant/pycortex-viewer-tools`.
-
-`bake.py` stayed: it injects the ROI-drawing bundle, so it *is* part of this project.
+General pycortex viewer-maintenance tooling (`reengine.py`, `fixups.py`, `add_help.py`,
+`convert_huth.py`) once lived here and was moved out in July 2026 to a separate tooling repository
+(`jackgallant/pycortex-viewer-tools`, currently private). This repo is the ROI/sulcus-drawing
+project only; `bake.py` stays because it injects the drawing bundle.

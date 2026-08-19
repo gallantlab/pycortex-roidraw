@@ -24,6 +24,6 @@ jobs:
       # Reproducible install from the committed package-lock.json.
       - run: npm ci
 
-      # `npm test` runs `pretest` (build the bundle) then the JS core/pipeline/contract/bundle
-      # tests and the Python tooling tests.
+      # `npm test` lints, runs `pretest:js` (build the bundle), then the JS
+      # core/pipeline/contract/bundle tests and the Python tooling tests.
       - run: npm test

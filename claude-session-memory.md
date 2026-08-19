@@ -2,6 +2,69 @@
 
 _Current status file. Most recent session at top._
 
+## 2026-08-19 — Full code review per CODE.REVIEW.md: style gate, doc reconciliation, redundancy cut
+
+Review of the whole tree against `~/CLAUDE/PYCORTEX/CODE.REVIEW.md` (style conformity, language
+conformity, doc/code consistency, and "many routes touch the same data" redundancy). Baseline was
+161 JS + 12 Python tests green. **Committed + pushed to `main` this session** (the "clean" at the
+end); the review report is the Artifact "Roidraw Review — August 2026": https://claude.ai/code/artifact/d5aa7ff9-5a71-4e2c-be83-9bb6d50f6689 (pass `url=` to republish).
+
+### Bugs fixed
+- `ROIDrawer.destroy()` never cleared the baked overlay layer, though the adapter's own `destroy()`
+  comment claimed it did. `autoAttach` destroys-then-attaches, so a re-attach left an orphan
+  `<g id="drawnrois">` in the overlay SVG + a stale `svgo.layers.drawnrois`. Now cleared in
+  `destroy()`; verified headless (0 orphan layers after re-attach).
+- Two different "is the user typing?" rules: the edit overlay's Delete guard blocked EVERY
+  `<input>` (the Import file input, buttons) while the controller's Shift/Esc guard did not.
+  One `isTextEntry()` in `ui/dom-utils.js` now serves both.
+- `LassoOverlay`'s 800 ms settle timer outlived `destroy()`. Tracked + cancelled.
+- `test/fake-adapter.js` `setOverlayLayer` returned `undefined` against a boolean contract.
+
+### Redundancy removed (one definition per rule)
+- **Bezier segment topology** (`segCount`/`segControls`/`minAnchors`/`hasCurve` in `core/bezier.js`):
+  the two samplers, two nearest-point searches, `deleteAnchor`'s floor, the edit overlay's
+  `minAnchors`, and the adapter's `_bezierSvgPath` all restated closed/open rules; now one
+  `sampleBezier`/`nearestOnCurve` with `evalClosed/Open/evalBezier` + `nearestOn*` as thin entry
+  points, and the adapter walks `segControls`. Pinned by `test/bezier-topology.test.js`.
+- `uvPxCorrespondences()` (+ `ALL_UV_BOUNDS`) in `adapter/viewer-adapter.js` replaces the two
+  copies in draw-pipeline and the edit overlay. `ndcToPixel` (geom) replaces the adapter's `_ndc`.
+  `polygonBounds` replaces `bboxDiagonal`'s and `_anchorUvBounds`'s loops.
+- `core/timer-set.js` `TimerSet` replaces the two `_later`/Set copies (controller + adapter).
+- `ui/overlay-canvas.js` `CanvasOverlay` base: canvas creation, `syncRect`, `_evtPt`, `_clearCanvas`,
+  `destroy` — both overlays extend it.
+- `MODE`/`TOOL`/`asTool` in `core/draw-mode.js` replace bare "display"/"draw"/"lasso"/"trace"
+  literals in index.js, draw-panel, lasso-overlay, mode-toggle.
+- `ShapeSet.defaultName(kind)` — the prompt default and the unnamed-import fallback used two rules.
+- index.js: `_promptName`, `_export` (the two export flows), `FILL_TARGET` dropped (adapter owns
+  the fill default), dead adapter `layerName` option removed, `AUTOATTACH_*` constants.
+- `examples/make_viewer.py` now imports `bake.bake()` instead of re-implementing the injection.
+- `package.json` `test:py` → `python3 -m unittest discover -s test -p 'test_*.py'`.
+
+### Style gate
+`eslint` (flat config `eslint.config.js`: recommended + 4-space/double-quote/semi/no-var/
+prefer-const/eqeqeq; continuation-line alignment left free) added as a devDependency; `npm run lint`
+runs first in `npm test` (so CI). Tree is lint-clean. README gained a **Conventions** section.
+
+### Docs reconciled
+viewer-adapter.js header ("not a base class" — it is one), TESTING.md (phantom `outline` test file),
+draw-panel `setEditingId` comment, bezier.js/draw-pipeline.js/selection.js headers (ROI-only →
+ROI+sulcus / space-agnostic), package.json description, roidraw.css header, README architecture +
+testing + a trimmed "Not here" (this repo is **PUBLIC** now; the tooling repo it points at is
+private). pycortex `docs/roidraw.rst` is consistent with the README once PR #657 merges (it still
+merges cleanly on current main; unreviewed since 2026-07-09).
+
+### Verified
+174 JS + 12 Python tests, lint clean, bundle built; headless Firefox (Playwright from the local
+similarity-viewer clone) against a scratch copy of a real baked viewer: lasso → ROI (94 verts,
+bezier), edit (4 anchors) + Esc, trace → sulcus, SVG export 1196 bytes, destroy + re-attach → no
+orphan layer, 2 overlay canvases, 1 panel, no roidraw console errors. NOTE: the local dir
+`~/CLAUDE/PYCORTEX/viewer-stories-group-roidraw` is actually a clone of
+`jackgallant/viewer.semantic.similarity.group` (its similar-tuning.js hides roidraw's native toggle).
+
+### Left as-is (noted in the report)
+Two overlay-readiness polls (controller `_sync` retry, adapter `applyHostDefaults`); mixed `//` vs
+`/* */` doc-comment style; the "drawn ROIs" folder label (holds sulci too).
+
 ## 2026-07-09 — Adversarial code review: the v0.4.0 sulcus export was broken. Fixed.
 
 User asked for a full, mean code review of the whole tree, then to fix everything found. Read all

@@ -41,6 +41,12 @@ export class ShapeSet {
 
     nextColor() { return PALETTE[(this.nextId - 1) % PALETTE.length]; }
 
+    /* The name offered for a new shape of `kind` when the user (or an imported file) gives none:
+     * "roi3" for the third ROI, "sulcus1" for the first sulcus. Counts shapes of that kind, not
+     * ids, so sulci don't skip the ROI numbering. One rule for the prompt default and the import
+     * fallback alike. */
+    defaultName(kind) { return kind + (this.byKind(kind).length + 1); }
+
     /* An ROI carries membership (left/right/outline); a sulcus carries only its open bezier and a
      * label vertex. Vertex fields are omitted entirely for sulci rather than set to empty arrays,
      * so a downstream reader can't mistake "no membership" for "membership of nothing". */
@@ -92,7 +98,7 @@ export class ShapeSet {
             const v = r.vertices || {};
             added.push(this.add({
                 kind: "roi",
-                name: r.name || ("roi" + this.nextId),
+                name: r.name || this.defaultName("roi"),
                 color: r.color,
                 left: (v.left || []).slice(), right: (v.right || []).slice(),
                 outline: copyRing(r.outline),

@@ -3,16 +3,20 @@
   "version": "0.4.1",
   "private": true,
   "type": "module",
-  "description": "Pycortex WebGL viewer with in-browser ROI drawing + editing + export. Modular: pure core / viewer adapter / UI.",
+  "description": "In-browser ROI + sulcus drawing, editing, and export for pycortex WebGL viewers. Modular: pure core / viewer adapter / UI.",
   "license": "BSD-2-Clause",
   "scripts": {
     "build": "node build.mjs",
-    "test": "npm run test:js && npm run test:py",
+    "lint": "eslint .",
+    "test": "npm run lint && npm run test:js && npm run test:py",
     "pretest:js": "npm run build",
     "test:js": "node --test test/*.test.js",
-    "test:py": "python3 test/test_bake.py && python3 test/test_sulci_svg.py"
+    "test:py": "python3 -m unittest discover -s test -p 'test_*.py'"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0"
+    "@eslint/js": "^10.0.1",
+    "esbuild": "^0.24.0",
+    "eslint": "^10.8.1",
+    "globals": "^17.11.0"
   }
 }

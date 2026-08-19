@@ -207,3 +207,15 @@ test("add: an ROI always has membership arrays, even when the caller omits them"
     const sulcus = new ShapeSet().add({ kind: "sulcus", name: "CS" });
     assert.strictEqual("left" in sulcus, false, "a sulcus has no membership, not empty membership");
 });
+
+test("defaultName: numbers per kind, and the import fallback uses the same rule", () => {
+    const s = new ShapeSet();
+    assert.equal(s.defaultName("roi"), "roi1");
+    s.add({ kind: "sulcus", name: "CS", bezier: {} });
+    s.add({ kind: "sulcus", name: "CS", bezier: {} });
+    assert.equal(s.defaultName("roi"), "roi1");          // sulci don't advance the ROI numbering
+    assert.equal(s.defaultName("sulcus"), "sulcus3");
+    const [r] = s.loadJSON({ format: FORMAT, rois: [{ vertices: { left: [1], right: [] } }] });
+    assert.equal(r.name, "roi1");
+    assert.equal(s.defaultName("roi"), "roi2");
+});

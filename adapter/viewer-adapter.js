@@ -5,8 +5,9 @@
  * never to a specific viewer's internals. To run ROI drawing on a different WebGL surface
  * viewer, implement this interface (see pycortex-adapter.js for the reference implementation).
  *
- * It is a documented duck-typed interface, not a base class — implementers provide their own
- * object with these methods. The methods below `throw` so an incomplete adapter fails loudly.
+ * It is a documented interface. The class is a convenience base (both PycortexAdapter and the test
+ * fake `extends` it, and `REQUIRED` below drives a conformance test), but any object with these
+ * methods works — the required methods `throw` here so an incomplete adapter fails loudly.
  *
  * Coordinate conventions:
  *   - "screen px": CSS pixels relative to the surface canvas's top-left (what the lasso uses).
@@ -133,3 +134,24 @@ ViewerAdapter.REQUIRED = [
     "setOverlayLayer", "setLayerVisible", "flatten",
     "setCameraTarget", "setCameraRadius", "cameraRadius", "requestRender", "onMixChange",
 ];
+
+/* Everything: the bounds that select the whole flatmap for projectVerticesInUvBounds. */
+export const ALL_UV_BOUNDS = Object.freeze({ minu: -Infinity, maxu: Infinity, minv: -Infinity, maxv: Infinity });
+
+/*
+ * uv->px correspondences for a homography fit, from the adapter's projectVerticesInUvBounds
+ * flattened across both hemispheres into parallel `src` (uv) / `dst` (px) arrays. The edit overlay
+ * (LOCAL bounds around the shape) and the sulcus trace pipeline (the whole flatmap) both fit the
+ * same kind of transform from the same kind of data — this is the one place that data is shaped.
+ * `bounds` defaults to the whole flatmap.
+ */
+export function uvPxCorrespondences(adapter, bounds = ALL_UV_BOUNDS) {
+    const proj = adapter.projectVerticesInUvBounds(bounds);
+    const src = [], dst = [];
+    for (const h of ["left", "right"]) {
+        const p = proj[h];
+        if (!p) continue;
+        for (let i = 0; i < p.uv.length; i++) { src.push(p.uv[i]); dst.push(p.px[i]); }
+    }
+    return { src, dst };
+}

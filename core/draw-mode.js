@@ -12,9 +12,16 @@
  *   noteEditStart(isFlat)  -> { flatten }  re-flatten if an edit starts while inflated
  *   lassoActive(isFlat, editing) -> bool   capture is live only in Draw + flat + not editing
  */
-// The two modes. String values are part of the controller's public surface (index.js compares
-// this.mode to these), so the values must stay "display"/"draw" — the consts just name them.
+// The two modes. The string values are part of the public surface — ROIDrawer.setMode() accepts
+// them (the mode toggle's buttons send them) and ROIDrawer.mode returns them — so they must stay
+// "display"/"draw"; the consts just name them so no caller spells a mode as a bare literal.
 export const MODE = { DISPLAY: "display", DRAW: "draw" };
+
+// The two draw tools: what a plain drag produces. A lasso is a closed ROI; a trace is an open
+// sulcus. The panel's selector, the lasso overlay and the controller's status line all name the
+// tool through these, and `asTool` is the one normalization (anything that isn't TRACE is LASSO).
+export const TOOL = { LASSO: "lasso", TRACE: "trace" };
+export const asTool = (t) => (t === TOOL.TRACE ? TOOL.TRACE : TOOL.LASSO);
 
 export class DrawModeMachine {
     constructor() {

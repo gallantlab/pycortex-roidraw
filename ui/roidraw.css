@@ -1,4 +1,5 @@
-/* roidraw UI — class-based styles (no inline style strings in the JS). */
+/* roidraw UI. Everything visual lives here; the JS only sets what must be computed at runtime
+ * (overlay position/size, cursor, show/hide). */
 
 .roidraw-overlay {
     position: fixed;
@@ -31,10 +32,8 @@
 .roidraw-panel label { display: block; margin-bottom: 4px; }
 
 .roidraw-status { margin-bottom: 6px; }
-.roidraw-status--ok    { color: #9f9; }
 .roidraw-status--warn  { color: #f99; }
 .roidraw-status--draw  { color: #ffcc00; }
-.roidraw-status--inspect { color: #6cf; }
 
 .roidraw-tools { display: flex; gap: 0; margin: 6px 0 8px; }
 /* `.roidraw-panel button` is (0,1,1); a bare `.roidraw-tools__btn` is (0,1,0) and loses to it, so

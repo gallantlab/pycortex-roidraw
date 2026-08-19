@@ -207,3 +207,17 @@ test("curveFromTrace: null when the homography cannot be fit", () => {
     };
     assert.strictEqual(curveFromTrace(collinear, [[0, 0], [5, 5], [9, 1]]), null);
 });
+
+test("uvPxCorrespondences: flattens both hemispheres, default bounds = the whole flatmap", async () => {
+    const { uvPxCorrespondences, ALL_UV_BOUNDS } = await import("../adapter/viewer-adapter.js");
+    const ad = new FakeSurfaceAdapter({ grid: 5 });
+    const all = uvPxCorrespondences(ad);
+    assert.equal(all.src.length, 2 * 25);
+    assert.equal(all.dst.length, all.src.length);
+    assert.deepEqual(all.src[0], ad.allVertexUV().left.uv[0]);
+    assert.deepEqual(all.dst[0], ad.projectVertices().left.px[0]);
+    assert.deepEqual(uvPxCorrespondences(ad, ALL_UV_BOUNDS), all);
+    // a local box around the left hemi's corner keeps only those vertices
+    const local = uvPxCorrespondences(ad, { minu: -0.1, maxu: 0.3, minv: -0.1, maxv: 0.3 });
+    assert.equal(local.src.length, 4);
+});

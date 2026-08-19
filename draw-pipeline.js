@@ -1,8 +1,9 @@
 /*
- * draw-pipeline.js — the ROI-derivation pipeline: turn a lasso (or an edited bezier) into the
- * stored ROI geometry, using only a ViewerAdapter + the pure core. No DOM, no UI, no prompt — that
- * stays in the controller — so this whole "does the geometry do what we think" path is testable
- * headless against a synthetic-surface adapter.
+ * draw-pipeline.js — the shape-derivation pipeline, using only a ViewerAdapter + the pure core.
+ *   ROI:    lasso (or an edited bezier) -> vertex membership + outline ring + label + bezier.
+ *   Sulcus: traced stroke -> px->uv via a homography -> open bezier + a live-overlay label vertex.
+ * No DOM, no UI, no prompt — that stays in the controller — so this whole "does the geometry do
+ * what we think" path is testable headless against a synthetic-surface adapter.
  *
  * The bezier is the source of truth: when a lasso yields a fittable curve, membership is RE-DERIVED
  * from the curve (in view-independent flat-UV) so the stored vertices match the editable outline.
@@ -11,11 +12,11 @@ import { selectInPolygon } from "./core/selection.js";
 import { buildOutline, pickLabelVertex } from "./core/outline.js";
 import { fitClosedBezier, evalClosedBezier, fitOpenBezier, evalOpenBezier } from "./core/bezier.js";
 import { fitHomography, applyHomography, invertHomography } from "./core/transform.js";
+import { uvPxCorrespondences } from "./adapter/viewer-adapter.js";
 
 const BEZIER_SAMPLES = 16;    // samples/segment when rasterizing a bezier to a uv polygon for selection
 const OUTLINE_EPS_UV = 0.003; // RDP tolerance (uv units) for the outline ring built in uv space
 const TRACE_SAMPLES = 24;     // samples/segment when locating a curve's parametric midpoint
-const ALL_UV_BOUNDS = { minu: -Infinity, maxu: Infinity, minv: -Infinity, maxv: Infinity };
 
 // Map an outline ring [{h,g}] to flat-UV points [[u,v],...], dropping vertices with no uv.
 function ringToUv(adapter, ring) {
@@ -28,6 +29,12 @@ function ringToUv(adapter, ring) {
 // Back-fill an editable bezier for a v1 ROI (one saved before the bezier feature) from its stored
 // outline ring, so imported shapes edit just like freshly drawn ones. Returns a bezier or null.
 export function backfillBezier(adapter, ring) {
+    return fitRingBezier(adapter, ring);
+}
+
+/* Fit a closed bezier to a vertex ring mapped into flat-UV, or null when fewer than 3 of its
+ * vertices have uv. The one rule for "ring -> bezier", shared by the lasso path and v1 back-fill. */
+function fitRingBezier(adapter, ring) {
     const ringUv = ringToUv(adapter, ring);
     return ringUv && ringUv.length >= 3 ? fitClosedBezier(ringUv) : null;
 }
@@ -74,8 +81,7 @@ export function deriveRoiFromLasso(adapter, pts) {
     if (!sel0.total) return { left: [], right: [], outline: null, labelVert: null, bezier: null, total: 0 };
 
     const lassoRing = buildOutline(pts, sel0);                       // px-space ring of the stroke
-    const ringUv = ringToUv(adapter, lassoRing);
-    const fitted = ringUv && ringUv.length >= 3 ? fitClosedBezier(ringUv) : null;
+    const fitted = fitRingBezier(adapter, lassoRing);
     // Prefer bezier-derived membership so the stored vertices match the editable curve. But only keep
     // the bezier if it actually encloses something: a curve that re-derives to zero vertices (a very
     // thin/tiny ROI the smoothing shrank past every vertex) would leave the bezier — the source of
@@ -108,18 +114,6 @@ export function nearestVertexTo(adapter, uv) {
         }
     }
     return best;
-}
-
-/* uv->px correspondences over the whole flatmap, as the edit overlay builds them. */
-function correspondences(adapter) {
-    const proj = adapter.projectVerticesInUvBounds(ALL_UV_BOUNDS);
-    const src = [], dst = [];
-    for (const h of ["left", "right"]) {
-        const p = proj[h];
-        if (!p) continue;
-        for (let i = 0; i < p.uv.length; i++) { src.push(p.uv[i]); dst.push(p.px[i]); }
-    }
-    return { src, dst };
 }
 
 /* The label vertex for an OPEN curve: the surface vertex nearest the curve's midpoint sample.
@@ -155,7 +149,7 @@ export function labelForCurve(adapter, bezier) {
  */
 export function curveFromTrace(adapter, pts) {
     if (!pts || pts.length < 2) return null;
-    const c = correspondences(adapter);
+    const c = uvPxCorrespondences(adapter);            // the whole flatmap (a global fit)
     if (c.src.length < 4) return null;
     const H = fitHomography(c.src, c.dst);
     if (!H) return null;

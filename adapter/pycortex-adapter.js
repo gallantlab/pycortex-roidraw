@@ -16,9 +16,10 @@
  *   - dat.GUI control panel (gui.__folders) + LandscapeControls (setTarget/setRadius) + viewer.animate.
  */
 import { ViewerAdapter } from "./viewer-adapter.js";
-import { chaikin } from "../core/geom.js";
-import { isClosed, segCount } from "../core/bezier.js";
+import { chaikin, ndcToPixel } from "../core/geom.js";
+import { isClosed, segCount, segControls, hasCurve } from "../core/bezier.js";
 import { exportSulciSvg, SULCI_STROKE_WIDTH, SULCI_STROKE_OPACITY } from "../core/svg-export.js";
+import { TimerSet } from "../core/timer-set.js";
 
 const SVGNS = "http://www.w3.org/2000/svg";
 const HEMIS = ["left", "right"];
@@ -110,7 +111,7 @@ export function surfaceReady(viewer) {
 }
 
 export class PycortexAdapter extends ViewerAdapter {
-    constructor(viewer, { layerName = "drawnrois", animSpeedFallback = 0.6 } = {}) {
+    constructor(viewer, { animSpeedFallback = 0.6 } = {}) {
         super();
         this.THREE = globalThis.THREE;
         this.mriview = globalThis.mriview;
@@ -124,7 +125,6 @@ export class PycortexAdapter extends ViewerAdapter {
         this.surface = findSurface(viewer);
         this.posdata = (this.surface.picker && this.surface.picker.posdata) || this._buildPosdata();
 
-        this._layerName = layerName;
         this._animSpeedFallback = animSpeedFallback;
         this._v = new this.THREE.Vector3();
         this._thickmix = DEFAULT_THICKMIX;
@@ -132,8 +132,8 @@ export class PycortexAdapter extends ViewerAdapter {
         this._layerHidden = false;
         this._labelsHidden = false;
         this._uiFolderAdded = false;
-        this._timers = new Set();    // pending setTimeout ids, cancelled by destroy()
-        this._onSetData = null;      // host listener installed by applyHostDefaults()
+        this._timers = new TimerSet();   // every poll/deferred teardown; destroy() cancels them
+        this._onSetData = null;          // host listener installed by applyHostDefaults()
     }
 
     // --- surface identity -------------------------------------------------------------
@@ -215,7 +215,7 @@ export class PycortexAdapter extends ViewerAdapter {
                 const v = this._worldOf(pd, mw, i, surfmix, foy).project(cam);
                 if (v.z < -1 || v.z > 1) continue; // behind camera / outside frustum
                 out[h].idx.push(revIdx[i]);
-                out[h].px.push(this._ndc(v, W, H));
+                out[h].px.push(ndcToPixel(v, W, H));
             }
         }
         return out;
@@ -272,13 +272,11 @@ export class PycortexAdapter extends ViewerAdapter {
                 const p = this._worldOf(pd, mw, i, surfmix, foy).project(cam);
                 if (p.z < -1 || p.z > 1) continue;
                 out[h].uv.push([u, v]);
-                out[h].px.push(this._ndc(p, W, H));
+                out[h].px.push(ndcToPixel(p, W, H));
             }
         }
         return out;
     }
-
-    _ndc(v, W, H) { return [(v.x * 0.5 + 0.5) * W, (-v.y * 0.5 + 0.5) * H]; }
 
     // --- view framing primitive -------------------------------------------------------
 
@@ -301,7 +299,7 @@ export class PycortexAdapter extends ViewerAdapter {
                 sx += w.x; sy += w.y; sz += w.z; count++;
                 const nd = w.clone().project(cam);
                 if (nd.z < -1 || nd.z > 1) continue;
-                const px = this._ndc(nd, W, H);
+                const px = ndcToPixel(nd, W, H);
                 if (px[0] < minx) minx = px[0];
                 if (px[0] > maxx) maxx = px[0];
                 if (px[1] < miny) miny = px[1];
@@ -492,7 +490,7 @@ export class PycortexAdapter extends ViewerAdapter {
         svgo.svg.appendChild(layerEl);
 
         // occlusion-aware label sprites, reusing pycortex's own Labels; degrade gracefully
-        let labels = null;
+        let labels;
         try {
             labels = new this.svgoverlay.Labels(labelsEl, svgo.posdata, !!this._labelsHidden);
             labels.shader.uniforms.depth.value = svgo.depth;
@@ -549,18 +547,16 @@ export class PycortexAdapter extends ViewerAdapter {
     // sulcus) has n-1 segments and MUST NOT close — the missing `Z` is exactly what distinguishes
     // a sulcus from an ROI on disk.
     _bezierSvgPath(bez, W, H) {
-        const { anchors, inHandles, outHandles } = bez;
-        const n = anchors.length;
-        const closed = isClosed(bez);
-        if (n < (closed ? 3 : 2)) return null;
+        if (!hasCurve(bez)) return null;
         const P = (uv) => (uv[0] * W).toFixed(2) + "," + ((1 - uv[1]) * H).toFixed(2);
-        let d = "M" + P(anchors[0]);
-        const segs = segCount(bez);   // n when closed (the wrap), n-1 when open
-        for (let i = 0; i < segs; i++) {
-            const j = closed ? (i + 1) % n : i + 1;
-            d += "C" + P(outHandles[i]) + " " + P(inHandles[j]) + " " + P(anchors[j]);
+        let d = "M" + P(bez.anchors[0]);
+        // segControls/segCount own the wrap rule (n segments closed, n-1 open) — the same walk the
+        // samplers use, so what is baked here is exactly the curve the editor shows.
+        for (let i = 0, segs = segCount(bez); i < segs; i++) {
+            const [, c1, c2, p3] = segControls(bez, i);
+            d += "C" + P(c1) + " " + P(c2) + " " + P(p3);
         }
-        return closed ? d + "Z" : d;
+        return isClosed(bez) ? d + "Z" : d;
     }
 
     /*
@@ -647,7 +643,7 @@ export class PycortexAdapter extends ViewerAdapter {
             const svg = this.surface && this.surface.svg;
             if (!svg || !svg.layers || !(svg.rois || svg.sulci)) {
                 if (tries > OVERLAY_RETRY_MAX) return;
-                this._later(() => trySetOverlays(tries + 1), OVERLAY_RETRY_MS);
+                this._timers.later(() => trySetOverlays(tries + 1), OVERLAY_RETRY_MS);
                 return;
             }
             if (svg.rois) { svg.rois.showhide(false); if (svg.rois.labels) svg.rois.labels.showhide(false); }
@@ -656,7 +652,7 @@ export class PycortexAdapter extends ViewerAdapter {
         };
         trySetOverlays(0);
         // the datasets folder is built open after data loads (post-attach); re-collapse a few times
-        COLLAPSE_SCHEDULE_MS.forEach((ms) => this._later(() => this.collapseControlPanel(false), ms));
+        COLLAPSE_SCHEDULE_MS.forEach((ms) => this._timers.later(() => this.collapseControlPanel(false), ms));
         const t0 = Date.now();
         if (this.viewer.addEventListener) {
             this._onSetData = () => { if (Date.now() - t0 < COLLAPSE_WINDOW_MS) this.collapseControlPanel(false); };
@@ -664,17 +660,9 @@ export class PycortexAdapter extends ViewerAdapter {
         }
     }
 
-    /* setTimeout, remembered, so destroy() can cancel it. */
-    _later(fn, ms) {
-        const id = setTimeout(() => { this._timers.delete(id); fn(); }, ms);
-        this._timers.add(id);
-        return id;
-    }
-
     // Release everything applyHostDefaults() started. The overlay layer itself is left in place:
     // the controller clears it (setOverlayLayer(name, [])) before it tears the adapter down.
     destroy() {
-        for (const id of this._timers) clearTimeout(id);
         this._timers.clear();
         if (this._onSetData && this.viewer.removeEventListener)
             this.viewer.removeEventListener("setData", this._onSetData);

@@ -1,32 +1,36 @@
 /*
- * index.js — the ROI-drawing controller. Wires the pure core (selection/outline/model) to a
+ * index.js — the drawing controller. Wires the pure core (selection/outline/bezier/model) to a
  * ViewerAdapter and the UI. The only host-specific dependency is the adapter, so swapping
  * adapters ports the whole feature to another viewer.
  *
  * Public API (also on window.ROIDraw for the build-time injected bundle):
  *   attach(viewer, opts)  -> ROIDrawer
  *   autoAttach(opts)       -> poll until the viewer is ready, then attach (for make_static onload)
+ * `opts` is passed through to the PycortexAdapter ({ animSpeedFallback }).
  */
 import { PycortexAdapter, surfaceReady, findSurface } from "./adapter/pycortex-adapter.js";
 import { ShapeSet } from "./core/shape-model.js";
-import { DrawModeMachine } from "./core/draw-mode.js";
+import { DrawModeMachine, MODE, TOOL } from "./core/draw-mode.js";
+import { TimerSet } from "./core/timer-set.js";
 import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel, curveFromTrace, labelForCurve } from "./draw-pipeline.js";
 import { LassoOverlay } from "./ui/lasso-overlay.js";
 import { BezierEditOverlay } from "./ui/bezier-edit-overlay.js";
 import { DrawPanel } from "./ui/draw-panel.js";
 import { ModeToggle } from "./ui/mode-toggle.js";
+import { isTextEntry } from "./ui/dom-utils.js";
 import css from "./ui/roidraw.css";
 
-const LAYER = "drawnrois";
-const FILL_TARGET = 0.70;  // brain fills ~70% of the viewport
-const FRAME_LERP = 0.30;   // per-frame damping of the zoom-to-fill during a morph
-const FRAME_TRIES = 60;    // _frameOnLoad: polls for a measurable surface, 100 ms apart
+const LAYER = "drawnrois";     // the overlay layer every drawn shape is baked into
+const FRAME_LERP = 0.30;       // per-frame damping of the zoom-to-fill during a morph
+const FRAME_TRIES = 60;        // _frameOnLoad: polls for a measurable surface, 100 ms apart
 const FRAME_POLL_MS = 100;
 // Firefox writes a 0-byte file if the anchor is removed / the object URL revoked before the
 // download starts, so both are deferred well past the click.
 const DOWNLOAD_TEARDOWN_MS = 4000;
-const OVERLAY_SYNC_TRIES = 40;  // _sync: retries while the host's SVG overlay is still loading
-const OVERLAY_SYNC_MS = 250;    // ...interval between those retries
+const OVERLAY_SYNC_TRIES = 40;   // _sync: retries while the host's SVG overlay is still loading
+const OVERLAY_SYNC_MS = 250;     // ...interval between those retries
+const AUTOATTACH_TRIES = 120;    // autoAttach: polls for a ready viewer, 300 ms apart (~36 s)
+const AUTOATTACH_POLL_MS = 300;
 
 // The one-line hint under the panel heading, per state. Kept out of _renderStatus so that
 // function reads as the state machine it is.
@@ -70,9 +74,9 @@ class ROIDrawer {
             onEdit: (bez) => this._applyEdit(bez),
         });
         this.editingId = null;
-        this._timers = new Set();   // pending setTimeout ids, all cancelled by destroy()
-        this._syncRetries = 0;      // consecutive failed setOverlayLayer attempts
-        this._syncTimer = 0;        // the queued _sync retry, if any
+        this._timers = new TimerSet();  // every poll/deferred teardown; destroy() cancels them
+        this._syncRetries = 0;          // consecutive failed setOverlayLayer attempts
+        this._syncTimer = 0;            // the queued _sync retry, if any
         this.panel = new DrawPanel({
             onExport: () => this.exportJSON(),
             onExportSulci: () => this.exportSulciSVG(),
@@ -92,25 +96,18 @@ class ROIDrawer {
         this._onResize = () => this._positionUI();
         window.addEventListener("resize", this._onResize);
 
-        this.setMode("display");
-        this._frameOnLoad(0);                      // center + ~70% fill the default view (glide)
+        this.setMode(MODE.DISPLAY);
+        this._frameOnLoad(0);                      // center + fill the default view (glide)
     }
 
-    // The mode ("display"|"draw") is owned by the state machine; read through to it.
+    // The mode (MODE.DISPLAY | MODE.DRAW) is owned by the state machine; read through to it.
     get mode() { return this._dm.mode; }
 
-    /* setTimeout, remembered, so destroy() can cancel it. autoAttach destroys a prior drawer
-     * before attaching a new one; an orphaned poll would keep calling a dead adapter. */
-    _later(fn, ms) {
-        const id = setTimeout(() => { this._timers.delete(id); fn(); }, ms);
-        this._timers.add(id);
-        return id;
-    }
-
     // --- view framing -----------------------------------------------------------------
+    // measureFrame's fill fraction is the adapter's default (host framing is the adapter's call).
 
     _frame() {
-        const fr = this.adapter.measureFrame(FILL_TARGET);
+        const fr = this.adapter.measureFrame();
         if (!fr) return;
         this.adapter.setCameraTarget(fr.com);
         const cur = this.adapter.cameraRadius();
@@ -118,8 +115,8 @@ class ROIDrawer {
     }
 
     _frameOnLoad(tries) {
-        const fr = this.adapter.measureFrame(FILL_TARGET);
-        if (!fr) { if (tries < FRAME_TRIES) this._later(() => this._frameOnLoad(tries + 1), FRAME_POLL_MS); return; }
+        const fr = this.adapter.measureFrame();
+        if (!fr) { if (tries < FRAME_TRIES) this._timers.later(() => this._frameOnLoad(tries + 1), FRAME_POLL_MS); return; }
         this.adapter.animateCamera({ target: fr.com, radius: fr.radius }); // glide, not a jump
     }
 
@@ -128,12 +125,12 @@ class ROIDrawer {
         // inflating / dragging the unfold slider) drops us back to Display. The machine's latch
         // ignores the transient non-flat mix events emitted while Draw's own flatten glide is still
         // in flight, so selecting Draw doesn't immediately bounce back out.
-        if (this._dm.noteMix(this.adapter.isFlat()).exit) { this.setMode("display"); return; }
+        if (this._dm.noteMix(this.adapter.isFlat()).exit) { this.setMode(MODE.DISPLAY); return; }
         this._updateDrawActive();   // lasso turns on once the flatten finishes
         if (this.editOverlay.isEditing()) this.editOverlay.reproject();  // keep knots on the surface
         // Auto-frame only while drawing (so Draw's flatten glide stays centered). In Display the user
         // owns the camera; re-framing on every unfold-slider morph there would fight their zoom/pan.
-        if (this.mode === "draw") this._frame();
+        if (this.mode === MODE.DRAW) this._frame();
         this._renderStatus();
     }
 
@@ -143,8 +140,8 @@ class ROIDrawer {
         // Re-entering Draw would re-flatten and re-arm the machine's latch, stomping on a flatten
         // glide already in flight. (Re-entering Display is idempotent, and the constructor calls
         // setMode("display") to paint the initial UI — so only Draw short-circuits.)
-        if (mode === "draw" && this.mode === "draw") return;
-        if (mode === "draw") {
+        if (mode === MODE.DRAW && this.mode === MODE.DRAW) return;
+        if (mode === MODE.DRAW) {
             if (this._dm.enterDraw().flatten) this.adapter.flatten();  // flat-only; lasso activates once flat
             this.adapter.setControlPanelVisible(false);
             this.panel.setVisible(true);
@@ -175,10 +172,10 @@ class ROIDrawer {
     }
 
     _renderStatus() {
-        if (this.mode !== "draw") return;   // the panel is hidden in Display mode
+        if (this.mode !== MODE.DRAW) return;   // the panel is hidden in Display mode
         if (!this.adapter.isFlat()) { this.panel.setStatus(STATUS.flattening, "warn"); return; }
         if (this.editOverlay.isEditing()) this.panel.setStatus(STATUS.editing, "draw");
-        else this.panel.setStatus(this.overlay.tool === "trace" ? STATUS.trace : STATUS.lasso, "draw");
+        else this.panel.setStatus(this.overlay.tool === TOOL.TRACE ? STATUS.trace : STATUS.lasso, "draw");
     }
 
     // --- drawing pipeline -------------------------------------------------------------
@@ -191,10 +188,8 @@ class ROIDrawer {
         const sel = deriveRoiFromLasso(this.adapter, pts);
         if (!sel.total) { this.panel.message("0 vertices selected — lasso the flatmap."); return; }
 
-        const fallback = "roi" + (this.shapes.byKind("roi").length + 1);
-        const entered = window.prompt("ROI name:", fallback);
-        if (entered === null) return;                 // Cancel
-        const name = entered.trim() || fallback;      // OK on a blank/whitespace field => use the default
+        const name = this._promptName("ROI name:", "roi");
+        if (name === null) return;                    // Cancel
         this.shapes.add({
             kind: "roi", name, left: sel.left, right: sel.right,
             outline: sel.outline, labelVert: sel.labelVert, bezier: sel.bezier,
@@ -210,13 +205,21 @@ class ROIDrawer {
         const curve = curveFromTrace(this.adapter, pts);
         if (!curve) { this.panel.message("Couldn't fit a curve — trace a longer stroke on the flatmap."); return; }
 
-        const fallback = "sulcus" + (this.shapes.byKind("sulcus").length + 1);
-        const entered = window.prompt("Sulcus name (reuse a name for the other hemisphere):", fallback);
-        if (entered === null) return;                 // Cancel
-        const name = entered.trim() || fallback;
+        const name = this._promptName("Sulcus name (reuse a name for the other hemisphere):", "sulcus");
+        if (name === null) return;                    // Cancel
         this.shapes.add({ kind: "sulcus", name, bezier: curve.bezier, labelVert: curve.labelVert });
         this._sync();
         this.panel.message('Sulcus "' + name + '": ' + curve.bezier.anchors.length + " anchors. ✎ editable.");
+    }
+
+    /* Ask for a new shape's name. The default is the model's own numbering for that kind (the same
+     * rule an import without a name gets); a blank/whitespace answer takes the default; Cancel
+     * returns null and the caller aborts the add. */
+    _promptName(label, kind) {
+        const fallback = this.shapes.defaultName(kind);
+        const entered = window.prompt(label, fallback);
+        if (entered === null) return null;
+        return entered.trim() || fallback;
     }
 
     // --- editing ----------------------------------------------------------------------
@@ -270,7 +273,7 @@ class ROIDrawer {
             return;
         }
         if (this._syncRetries++ === 0) this.panel.message("Waiting for the viewer's SVG overlay to load…");
-        this._syncTimer = this._later(() => { this._syncTimer = 0; this._sync(); }, OVERLAY_SYNC_MS);
+        this._syncTimer = this._timers.later(() => { this._syncTimer = 0; this._sync(); }, OVERLAY_SYNC_MS);
     }
 
     remove(id) {
@@ -291,17 +294,26 @@ class ROIDrawer {
         a.style.display = "none";
         document.body.appendChild(a);
         a.click();
-        this._later(() => { a.remove(); URL.revokeObjectURL(url); }, DOWNLOAD_TEARDOWN_MS);
+        this._timers.later(() => { a.remove(); URL.revokeObjectURL(url); }, DOWNLOAD_TEARDOWN_MS);
+    }
+
+    /* The one export flow: serialize with `build()` (exceptions become a panel message), download
+     * the text, and report the byte size. `build` returns the document text, or null to abort after
+     * having posted its own message. */
+    _export(build, filename, mime, describe) {
+        let text;
+        try { text = build(); }
+        catch (e) { this.panel.message("Export failed: " + (e && e.message ? e.message : e)); return; }
+        if (text === null) return;
+        this._download(text, filename, mime);
+        this.panel.message("Exported " + describe + ", " + byteLength(text) + " bytes, to " + filename + ".");
     }
 
     exportJSON() {
         const rois = this.shapes.byKind("roi");
         if (!rois.length) { this.panel.message("No ROIs to export."); return; }
-        let text;
-        try { text = JSON.stringify(this.shapes.toJSON(this.adapter.surfaceId()), null, 2); }
-        catch (e) { this.panel.message("Export failed: " + (e && e.message ? e.message : e)); return; }
-        this._download(text, "rois.json", "application/json");
-        this.panel.message("Exported " + rois.length + " ROI(s), " + byteLength(text) + " bytes, to rois.json.");
+        this._export(() => JSON.stringify(this.shapes.toJSON(this.adapter.surfaceId()), null, 2),
+            "rois.json", "application/json", rois.length + " ROI(s)");
     }
 
     /* Sulci export as pycortex's OWN overlays.svg markup, not as a roidraw JSON format: copy the
@@ -309,15 +321,14 @@ class ROIDrawer {
     exportSulciSVG() {
         const sulci = this.shapes.byKind("sulcus");
         if (!sulci.length) { this.panel.message("No sulci to export."); return; }
-        let xml;
-        try { xml = this.adapter.exportSulciMarkup(sulci); }
-        catch (e) { this.panel.message("Export failed: " + (e && e.message ? e.message : e)); return; }
-        // null and "" are different failures with different fixes: the adapter can't name the
-        // coordinate space yet, versus it could and no curve produced a path.
-        if (xml === null) { this.panel.message("Export failed: the viewer's SVG overlay isn't loaded yet — try again in a moment."); return; }
-        if (!xml) { this.panel.message("Export failed: no sulcus has a usable curve (each needs at least 2 anchors)."); return; }
-        this._download(xml, "sulci.svg", "image/svg+xml");
-        this.panel.message("Exported " + sulci.length + " sulcus curve(s), " + byteLength(xml) + " bytes, to sulci.svg.");
+        this._export(() => {
+            const xml = this.adapter.exportSulciMarkup(sulci);
+            // null and "" are different failures with different fixes: the adapter can't name the
+            // coordinate space yet, versus it could and no curve produced a path.
+            if (xml === null) { this.panel.message("Export failed: the viewer's SVG overlay isn't loaded yet — try again in a moment."); return null; }
+            if (!xml) { this.panel.message("Export failed: no sulcus has a usable curve (each needs at least 2 anchors)."); return null; }
+            return xml;
+        }, "sulci.svg", "image/svg+xml", sulci.length + " sulcus curve(s)");
     }
 
     _import(file) {
@@ -359,14 +370,14 @@ class ROIDrawer {
     // --- ui positioning + keyboard ----------------------------------------------------
 
     _positionUI() {
-        if (this.mode === "display") this.toggle.position(this.adapter.controlPanelRect());
+        if (this.mode === MODE.DISPLAY) this.toggle.position(this.adapter.controlPanelRect());
     }
 
     _wireKeys() {
         this._keydown = (e) => {
             // ignore global shortcuts only while typing in a TEXT field — a file input (Import) is
             // not text entry, so Shift-to-pan must still work even if it happens to hold focus.
-            if (this._isTextEntry(e.target)) return;
+            if (isTextEntry(e.target)) return;
             if (e.key === "Escape") { if (this.editOverlay.isEditing()) this._editToggle(null); else this.overlay.cancel(); }
             else if (e.key === "Shift") this.overlay.setPassthrough(true);
         };
@@ -379,10 +390,12 @@ class ROIDrawer {
     }
 
     // Tear down everything attach() wired up: pending timers, the mix subscription, the window
-    // listeners, the adapter's own host hooks, and every child UI component (each has its own
-    // destroy()). Lets a viewer detach/re-attach without leaking — which autoAttach does on reload.
+    // listeners, the baked overlay layer, the adapter's own host hooks, and every child UI
+    // component (each has its own destroy()). Lets a viewer detach/re-attach without leaking —
+    // which autoAttach does on reload. The layer is cleared here (not in the adapter's destroy)
+    // because the controller owns the layer name; a re-attach would otherwise bake a second
+    // layer with the same id on top of the orphaned first.
     destroy() {
-        for (const id of this._timers) clearTimeout(id);
         this._timers.clear();
         this._syncTimer = 0;
         if (this._unsubMix) this._unsubMix();
@@ -391,18 +404,9 @@ class ROIDrawer {
         window.removeEventListener("keyup", this._keyup, true);
         window.removeEventListener("blur", this._blur);
         for (const c of [this.overlay, this.editOverlay, this.panel, this.toggle]) if (c && c.destroy) c.destroy();
-        if (this.adapter && this.adapter.destroy) this.adapter.destroy();
-    }
-
-    // True only for text-entry targets (so we don't swallow Shift/Esc there). A file/button input
-    // is NOT text entry, so global gestures keep working even if such an element holds focus.
-    _isTextEntry(t) {
-        if (!t) return false;
-        if (t.isContentEditable) return true;
-        const tag = t.tagName || "";
-        if (tag === "TEXTAREA") return true;
-        if (tag !== "INPUT") return false;
-        return !/^(file|button|checkbox|radio|range|color|submit|reset|image)$/i.test(t.type || "text");
+        try { this.adapter.setOverlayLayer(LAYER, []); }
+        catch (e) { console.warn("[roidraw] clearing the overlay layer on destroy failed:", e); }
+        if (this.adapter.destroy) this.adapter.destroy();
     }
 }
 
@@ -410,7 +414,7 @@ export function attach(viewer, opts) { return new ROIDrawer(viewer, opts); }
 
 // Poll until the viewer + surface are ready, then attach. Used by the make_static onload block.
 export function autoAttach(opts = {}) {
-    let tries = 120; // ~36s
+    let tries = AUTOATTACH_TRIES;
     const go = () => {
         const v = window.viewer;
         if (v && surfaceReady(v)) {
@@ -420,7 +424,7 @@ export function autoAttach(opts = {}) {
             } catch (e) { console.error("[roidraw] attach failed:", e); }
             return;
         }
-        if (tries-- > 0) setTimeout(go, 300);
+        if (tries-- > 0) setTimeout(go, AUTOATTACH_POLL_MS);
         else console.warn("[roidraw] viewer never became ready");
     };
     go();

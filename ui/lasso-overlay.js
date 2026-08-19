@@ -7,47 +7,39 @@
  * Committed ROIs are NOT drawn here (the adapter renders them into the surface); this only
  * shows the in-progress lasso, and drawing happens at full-flat so it never needs reprojection.
  */
+import { polygonBounds } from "../core/geom.js";
+import { TOOL, asTool } from "../core/draw-mode.js";
+import { CanvasOverlay } from "./overlay-canvas.js";
+
 const DRAG_THRESHOLD = 4;       // px; distinguishes a click from a drag (Shift-inspect, and a stray
                                 // click that would otherwise become a degenerate shape)
 const LASSO_STROKE = "#ffcc00"; // in-progress lasso outline color
 const LASSO_WIDTH = 1.5;
+const SETTLE_MS = 800;          // the host canvas can settle slightly after load; re-measure once then
 
 /* Diagonal of the stroke's bounding box, in px. 0 for a stroke that never left its start point. */
 function bboxDiagonal(pts) {
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const p of pts) {
-        if (p[0] < minX) minX = p[0];
-        if (p[0] > maxX) maxX = p[0];
-        if (p[1] < minY) minY = p[1];
-        if (p[1] > maxY) maxY = p[1];
-    }
-    return Math.hypot(maxX - minX, maxY - minY);
+    const b = polygonBounds(pts);
+    return Math.hypot(b.maxx - b.minx, b.maxy - b.miny);
 }
 
-export class LassoOverlay {
+export class LassoOverlay extends CanvasOverlay {
     constructor(adapter, { onLasso, onInspect, onTrace } = {}) {
-        this.adapter = adapter;
+        super(adapter, "roidraw-overlay");
         this.onLasso = onLasso || (() => {});
         this.onTrace = onTrace || (() => {});
         this.onInspect = onInspect || (() => {});
         this.active = false;
         this.passthrough = false;   // Shift held -> drag pans the surface, click inspects a voxel
         this.drawing = false;
-        this.tool = "lasso";        // "lasso" (closed ROI) | "trace" (open sulcus)
+        this.tool = TOOL.LASSO;     // TOOL.LASSO (closed ROI) | TOOL.TRACE (open sulcus)
         this.lasso = [];
         this._gesture = "none";     // "lasso" | "shift" — fixed at mousedown
         this._downPt = null;
         this._panLast = null;
         this._moved = false;
 
-        const el = document.createElement("canvas");
-        el.className = "roidraw-overlay";
-        document.body.appendChild(el);
-        this.el = el;
-        this.ctx = el.getContext("2d");
-
-        this._onResize = () => this.syncRect();
-        window.addEventListener("resize", this._onResize);
+        const el = this.el;
         el.addEventListener("mousedown", (e) => this._onDown(e));
         el.addEventListener("mousemove", (e) => this._onMove(e));
         el.addEventListener("mouseup", (e) => this._onUp(e));
@@ -55,21 +47,13 @@ export class LassoOverlay {
         el.addEventListener("wheel", (e) => this._onWheel(e), { passive: false });
 
         this.syncRect();
-        // canvas size can settle slightly after load; re-measure shortly after attach.
-        setTimeout(() => this.syncRect(), 800);
+        // tracked so destroy() can cancel it: autoAttach destroys-then-attaches, and an orphaned
+        // re-measure would touch a removed canvas.
+        this._settleTimer = setTimeout(() => { this._settleTimer = 0; this.syncRect(); }, SETTLE_MS);
     }
 
     syncRect() {
-        const r = this.adapter.canvas().getBoundingClientRect();
-        const w = Math.max(1, Math.round(r.width));
-        const h = Math.max(1, Math.round(r.height));
-        this.el.style.left = Math.round(r.left) + "px";
-        this.el.style.top = Math.round(r.top) + "px";
-        this.el.style.width = w + "px";
-        this.el.style.height = h + "px";
-        // assigning canvas.width/height clears the bitmap + resets the 2D context, so only do it on
-        // an actual size change (same reason as BezierEditOverlay.syncRect).
-        if (this.el.width !== w || this.el.height !== h) { this.el.width = w; this.el.height = h; }
+        super.syncRect();
         this._redraw();
     }
 
@@ -92,7 +76,7 @@ export class LassoOverlay {
 
     /* Which gesture a plain drag performs: a closed ROI lasso, or an open sulcus trace. */
     setTool(tool) {
-        const t = tool === "trace" ? "trace" : "lasso";
+        const t = asTool(tool);
         if (t === this.tool) return;
         this.tool = t;
         this._cancel();            // an in-flight stroke belongs to the old tool
@@ -103,11 +87,6 @@ export class LassoOverlay {
         this.el.classList.toggle("roidraw-overlay--active", this.active && !nav);
         this.el.classList.toggle("roidraw-overlay--inspect", nav);
         this.el.style.cursor = nav ? "grab" : (this.active ? "crosshair" : "default");
-    }
-
-    _evtPt(e) {
-        const r = this.el.getBoundingClientRect();
-        return [e.clientX - r.left, e.clientY - r.top];   // overlay rect == canvas rect
     }
 
     _onDown(e) {
@@ -163,9 +142,9 @@ export class LassoOverlay {
         // same threshold that separates a Shift-click from a Shift-drag means a stray click can
         // neither mint a near-zero-length sulcus nor run the whole selection pipeline for nothing.
         // Beyond that, a trace needs only 2 points (a line); a closed lasso needs 3 to bound an area.
-        const minPts = this.tool === "trace" ? 2 : 3;
-        if (pts.length < minPts || bboxDiagonal(pts) <= DRAG_THRESHOLD) return;
-        if (this.tool === "trace") this.onTrace(pts); else this.onLasso(pts);
+        const trace = this.tool === TOOL.TRACE;
+        if (pts.length < (trace ? 2 : 3) || bboxDiagonal(pts) <= DRAG_THRESHOLD) return;
+        if (trace) this.onTrace(pts); else this.onLasso(pts);
     }
 
     _onWheel(e) {
@@ -186,7 +165,7 @@ export class LassoOverlay {
     _redraw() {
         const ctx = this.ctx;
         if (!ctx) return;
-        ctx.clearRect(0, 0, this.el.width, this.el.height);
+        this._clearCanvas();
         if (this.lasso.length > 1) {
             // Drawn as an open polyline for BOTH tools: a lasso's closure is implied by the
             // point-in-polygon test, not by the preview stroke.
@@ -200,7 +179,7 @@ export class LassoOverlay {
     }
 
     destroy() {
-        window.removeEventListener("resize", this._onResize);
-        if (this.el.parentNode) this.el.parentNode.removeChild(this.el);
+        if (this._settleTimer) { clearTimeout(this._settleTimer); this._settleTimer = 0; }
+        super.destroy();
     }
 }

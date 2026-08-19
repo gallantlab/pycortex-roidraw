@@ -145,7 +145,7 @@ test("moveHandle: smooth anchor mirrors the opposite handle; corner moves it alo
 });
 
 test("setAnchorSmooth: smoothing makes the handles collinear + mirrored about the anchor", () => {
-    let bez = setAnchorSmooth(bezierFromAnchors(sq), 1, false);
+    const bez = setAnchorSmooth(bezierFromAnchors(sq), 1, false);
     // distort it into a cusp, then re-smooth
     bez.outHandles[1] = [bez.anchors[1][0] + 0.2, bez.anchors[1][1] - 0.4];
     bez.inHandles[1] = [bez.anchors[1][0] - 0.1, bez.anchors[1][1] - 0.05];

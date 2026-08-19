@@ -4,6 +4,8 @@
  * named with HTML can't inject). Styling is in roidraw.css.
  */
 
+import { TOOL, asTool } from "../core/draw-mode.js";
+
 /* A panel button that fires `on` when clicked. Every button here is type="button" so it can't
  * submit a surrounding form the host may have wrapped the page in. */
 function button(label, on, className) {
@@ -35,13 +37,13 @@ export class DrawPanel {
         el.appendChild(h);
 
         // Which gesture a plain drag performs. An ROI is a closed lasso; a sulcus is an open trace.
-        this.tool = "lasso";
+        this.tool = TOOL.LASSO;
         const tools = document.createElement("div");
         tools.className = "roidraw-tools";
         tools.setAttribute("role", "group");
         tools.setAttribute("aria-label", "shape kind");
         this._toolBtns = {};
-        for (const [tool, label] of [["lasso", "ROI"], ["trace", "Sulcus"]]) {
+        for (const [tool, label] of [[TOOL.LASSO, "ROI"], [TOOL.TRACE, "Sulcus"]]) {
             const b = button(label, () => this.setTool(tool), "roidraw-tools__btn");
             b.setAttribute("aria-pressed", String(tool === this.tool));
             this._toolBtns[tool] = b;
@@ -94,7 +96,8 @@ export class DrawPanel {
         this.renderList([]);
     }
 
-    // The id of the ROI currently being edited (highlighted + its Edit link reads "done"), or null.
+    // The id of the shape (ROI or sulcus) being edited — its row is highlighted, its edit button
+    // reads "editing", and the "✓ Done editing" control shows — or null.
     setEditingId(id) { this._editingId = id; }
 
     /* Paint the segmented control to match this.tool. Fires no callback. */
@@ -108,12 +111,13 @@ export class DrawPanel {
 
     /* Select the active draw tool, reflect it, and notify the controller. */
     setTool(tool) {
-        this.tool = tool === "trace" ? "trace" : "lasso";
+        this.tool = asTool(tool);
         this._reflectTool();
         this.onTool(this.tool);
     }
 
-    setStatus(text, kind = "ok") {
+    /* The one-line hint under the heading. kind: "draw" (normal) | "warn" (flattening). */
+    setStatus(text, kind) {
         this.statusEl.textContent = text;
         this.statusEl.className = "roidraw-status roidraw-status--" + kind;
     }
@@ -122,7 +126,7 @@ export class DrawPanel {
 
     setVisible(on) { this.el.style.display = on ? "" : "none"; }
 
-    // Remove the panel from the DOM (matches the overlays' destroy(); called by ROIDrawer teardown).
+    // Remove the panel from the DOM (every UI component has a destroy(); ROIDrawer calls them all).
     destroy() { if (this.el && this.el.parentNode) this.el.parentNode.removeChild(this.el); this.el = null; }
 
     renderList(shapes) {

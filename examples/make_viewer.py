@@ -12,8 +12,8 @@ Notes:
   * The machine's GLOBAL pycortex config points at a deleted venv, so we repair it IN MEMORY
     (colormaps from this venv; a project-local filestore) — we never touch the user's config.
   * fsaverage is downloaded into a project-local store on first run.
-  * ROI drawing is added by copying dist/roidraw.bundle.js next to the generated index.html and
-    injecting two <script> tags before </body>. (Post-process, so no template/escaping pitfalls.)
+  * ROI drawing is added by bake.py — the same bundle copy + two <script> tags that bake a
+    pre-built static viewer. (Post-process, so no template/escaping pitfalls.)
 """
 import os
 import sys
@@ -22,11 +22,13 @@ import shutil
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (this file is in examples/)
 STORE = os.path.join(ROOT, "store")          # project-local pycortex filestore (gitignored)
 OUT = os.path.join(ROOT, "viewer_out")
-BUNDLE = os.path.join(ROOT, "dist", "roidraw.bundle.js")
 SUBJECT = "fsaverage"
 
-import cortex
-from cortex import options
+sys.path.insert(0, ROOT)
+from bake import bake  # noqa: E402  (the one injection routine; see bake.py)
+
+import cortex  # noqa: E402
+from cortex import options  # noqa: E402
 
 # --- repair the broken global config, in memory only -------------------------------------
 VENV_SHARE = os.path.join(sys.prefix, "share", "pycortex")
@@ -57,21 +59,9 @@ if os.path.exists(OUT):
 print("Generating viewer in %s ..." % OUT)
 make_static(OUT, data, recache=True, title="ROI Draw — fsaverage")
 
-# --- inject the ROI-drawing bundle --------------------------------------------------------
-shutil.copy(BUNDLE, os.path.join(OUT, "roidraw.bundle.js"))
+# --- inject the ROI-drawing bundle (bake.py: copies the bundle, injects the two tags) ---------
 index = os.path.join(OUT, "index.html")
-with open(index) as f:
-    html = f.read()
-inject = (
-    '\n<script src="roidraw.bundle.js"></script>'
-    '\n<script>window.ROIDraw.autoAttach();</script>\n'
-)
-if "</body>" in html:
-    html = html.replace("</body>", inject + "</body>", 1)
-else:
-    html += inject
-with open(index, "w") as f:
-    f.write(html)
+bake(OUT, html_name="index.html")
 
 print("\nDone. Open: %s" % index)
 print("Or serve:  python -m http.server -d %s 8000" % OUT)

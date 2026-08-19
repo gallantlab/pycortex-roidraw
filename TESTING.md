@@ -1,7 +1,9 @@
 # Testing & correctness
 
-`npm test` builds the bundle (via `pretest:js`) and runs the JS suite (`node --test`) plus the Python
-tooling tests. CI runs the same on every push/PR to `main` (`.github/workflows/test.yml`).
+`npm test` lints (`eslint`), builds the bundle (via `pretest:js`), runs the JS suite (`node --test`)
+and then the Python tooling tests (`unittest discover` over `test/test_*.py`, so a new Python test
+file is picked up without editing `package.json`). CI runs the same on every push/PR to `main`
+(`.github/workflows/test.yml`).
 
 The suite is layered by how strong a guarantee each layer can give.
 
@@ -24,8 +26,27 @@ prints the seed and reproduces deterministically):
   (move/smooth-toggle/delete/split), and `isClosed` reports `false` throughout — a sulcus can never
   silently acquire a closing segment.
 
-The example-based core tests (`geom`, `selection`, `bezier`, `transform`, `shape-model`, `outline`,
-`uv-membership`) remain as targeted cases.
+The example-based core tests (`geom`, `selection`, `bezier`, `transform`, `shape-model`,
+`uv-membership`, `timer-set`) remain as targeted cases.
+
+### One definition, read everywhere — agreement tests
+A recurring class of bug here has been two code paths restating the same rule and drifting. Three
+tests pin that the restatements are gone:
+
+- `test/bezier-topology.test.js`: the closed/open segment topology (how many segments, which
+  anchors each joins, the 3/2 anchor floor) is defined once in `core/bezier.js`
+  (`segCount`/`segControls`/`minAnchors`/`hasCurve`) and read by *both* samplers, *both*
+  nearest-point searches, `deleteAnchor`, and the adapter's SVG path writer. The test checks
+  `evalBezier`/`nearestOnBezier` dispatch to the explicit forms, that the adapter emits one `C` per
+  segment and a `Z` only when closed, and that every consumer honors the same floor.
+- `test/draw-pipeline.test.js` (`uvPxCorrespondences`): the edit overlay and the sulcus trace
+  pipeline fit their homographies from the same flattening of `projectVerticesInUvBounds`.
+- `test/shape-model.test.js` (`defaultName`): the name a prompt offers and the name an unnamed
+  import gets come from one rule.
+
+`test/dom-utils.test.js` pins `isTextEntry`, the single "is the user typing?" predicate behind
+every keyboard handler (controller Shift/Esc and the editor's Delete): a file input, button,
+checkbox or slider holding focus must not swallow a gesture.
 
 ### Sulcus SVG export — unit (pure writer) + a real XML parser
 `core/svg-export.js` is the pure writer for the sulci layer of an `overlays.svg`.

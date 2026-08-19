@@ -1,6 +1,8 @@
 /*
- * selection.js — turn a lasso polygon + projected vertices into a selected vertex set.
- * Pure: the adapter does the (host-specific) projection and hands us screen-space points.
+ * selection.js — turn a polygon + projected vertices into a selected vertex set. Pure: the adapter
+ * does the (host-specific) projection. Coordinate-space agnostic — the lasso path feeds screen px,
+ * the bezier re-derivation path feeds flat-uv (draw-pipeline.js); only polygon and points must
+ * share a space.
  */
 import { polygonBounds, inBounds, pointInPolygon } from "./geom.js";
 

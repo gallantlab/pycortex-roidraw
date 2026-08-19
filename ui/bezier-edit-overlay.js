@@ -27,9 +27,13 @@
 import { fitHomography, applyHomography, invertHomography } from "../core/transform.js";
 import {
     cloneBezier, evalBezier, moveAnchor, moveHandle, setAnchorSmooth,
-    splitSegment, deleteAnchor, nearestOnBezier, isClosed,
+    splitSegment, deleteAnchor, nearestOnBezier, isClosed, hasCurve,
 } from "../core/bezier.js";
+import { polygonBounds } from "../core/geom.js";
+import { uvPxCorrespondences } from "../adapter/viewer-adapter.js";
 import { hitTest, nearestWithin } from "./overlay-geom.js";
+import { CanvasOverlay } from "./overlay-canvas.js";
+import { isTextEntry } from "./dom-utils.js";
 
 const HIT_RADIUS = 9;        // px; how close a click must be to grab an anchor
 const HANDLE_RADIUS = 8;     // px; how close a click must be to grab a tangent handle
@@ -47,12 +51,10 @@ const COLOR = {              // editor palette
     handleStroke: "#1f7fa0", anchorStroke: "#0a3a4a", anchorSel: "#fff",
 };
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
-// A closed bezier needs 3 anchors to bound an area; an open one needs only 2 to be a curve.
-const minAnchors = (bez) => (isClosed(bez) ? 3 : 2);
 
-export class BezierEditOverlay {
+export class BezierEditOverlay extends CanvasOverlay {
     constructor(adapter, { onEdit } = {}) {
-        this.adapter = adapter;
+        super(adapter, "roidraw-overlay roidraw-edit-overlay");
         this.onEdit = onEdit || (() => {});
         this.shape = null;
         this.bez = null;        // working copy { anchors, inHandles, outHandles, smooth }
@@ -71,14 +73,7 @@ export class BezierEditOverlay {
         this._raf = 0;          // requestAnimationFrame id of the post-gesture tracking loop
         this._trackUntil = 0;   // timestamp the tracking loop should run until
 
-        const el = document.createElement("canvas");
-        el.className = "roidraw-overlay roidraw-edit-overlay";
-        document.body.appendChild(el);
-        this.el = el;
-        this.ctx = el.getContext("2d");
-
-        this._onResize = () => this.reproject();
-        window.addEventListener("resize", this._onResize);
+        const el = this.el;
         this._onKey = (e) => this._onKeyDown(e);
         window.addEventListener("keydown", this._onKey);
         el.addEventListener("mousedown", (e) => this._onDown(e));
@@ -89,17 +84,8 @@ export class BezierEditOverlay {
         el.addEventListener("wheel", (e) => this._onWheel(e), { passive: false });
     }
 
-    syncRect() {
-        const r = this.adapter.canvas().getBoundingClientRect();
-        const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
-        this.el.style.left = Math.round(r.left) + "px";
-        this.el.style.top = Math.round(r.top) + "px";
-        this.el.style.width = w + "px";
-        this.el.style.height = h + "px";
-        // assigning canvas.width/height clears the bitmap + resets the 2D context, so only do it on
-        // an actual size change (syncRect runs every tracking frame, where the size rarely changes).
-        if (this.el.width !== w || this.el.height !== h) { this.el.width = w; this.el.height = h; }
-    }
+    // A resize moves the surface under the knots: re-measure AND re-fit (the base class only re-measures).
+    onResize() { this.reproject(); }
 
     // Begin editing `shape` — an ROI (closed curve) or a sulcus (open one); it must carry a bezier.
     // Pass null to stop.
@@ -111,7 +97,7 @@ export class BezierEditOverlay {
         this._drag = null; this._dragMoved = false; this._hover = null; this._panLast = null;
         this.el.style.pointerEvents = this.shape ? "auto" : "none";
         this.el.classList.toggle("roidraw-edit-overlay--active", !!this.shape);
-        if (this.shape) { this.syncRect(); this.reproject(); } else { this._stopTracking(); this._clear(); }
+        if (this.shape) { this.syncRect(); this.reproject(); } else { this._stopTracking(); this._clearCanvas(); }
     }
 
     isEditing() { return !!this.shape; }
@@ -120,8 +106,7 @@ export class BezierEditOverlay {
     // so caching this lets the per-frame tracking loop just re-map it through the new homography
     // instead of rebuilding + re-sampling the curve every frame.
     _recurve() {
-        this._uvPoly = (this.bez && this.bez.anchors.length >= minAnchors(this.bez))
-            ? evalBezier(this.bez, CURVE_SAMPLES) : null;
+        this._uvPoly = hasCurve(this.bez) ? evalBezier(this.bez, CURVE_SAMPLES) : null;
     }
 
     // The viewer applies a camera change on its NEXT render frame, so reprojecting synchronously in
@@ -147,13 +132,13 @@ export class BezierEditOverlay {
     // drifts (the curve sits slightly inside the baked outline), but around a single shape it's
     // near-exact. Falls back to the whole flatmap only if the local region is too sparse on screen.
     reproject() {
-        if (!this.bez || this.bez.anchors.length < minAnchors(this.bez)) { this._clear(); return; }
+        if (!hasCurve(this.bez)) { this._clearCanvas(); return; }
         this.syncRect();
-        let c = this._correspondences(this._anchorUvBounds(LOCAL_MARGIN));
+        let c = uvPxCorrespondences(this.adapter, this._anchorUvBounds(LOCAL_MARGIN));
         // If the shape's region is too sparse on screen, fall back to the whole flatmap — but ONLY to
         // bootstrap the very first fit. Once we have a homography we keep it rather than reprojecting
         // every vertex each frame in the tracking loop (which would stall when the shape is off-screen).
-        if (c.src.length < 6 && !this.H) c = this._correspondences(null);
+        if (c.src.length < 6 && !this.H) c = uvPxCorrespondences(this.adapter);
         if (c.src.length >= 4) {
             const H = fitHomography(c.src, c.dst);
             if (H) { this.H = H; this.Hinv = invertHomography(H); }   // else keep the last good fit
@@ -161,32 +146,11 @@ export class BezierEditOverlay {
         this._redraw();
     }
 
-    // uv->px correspondences from the vertices inside `bounds` (or the whole flatmap if null).
-    _correspondences(bounds) {
-        const b = bounds || { minu: -Infinity, maxu: Infinity, minv: -Infinity, maxv: Infinity };
-        const proj = this.adapter.projectVerticesInUvBounds(b);
-        const src = [], dst = [];
-        for (const h of ["left", "right"]) {
-            const p = proj[h];
-            if (!p) continue;
-            for (let i = 0; i < p.uv.length; i++) { src.push(p.uv[i]); dst.push(p.px[i]); }
-        }
-        return { src, dst };
-    }
-
-    // uv bounding box of the current anchors, padded by `m`.
+    // uv bounding box of the current anchors, padded by `m` (in the adapter's {minu,maxu,minv,maxv} form).
     _anchorUvBounds(m) {
-        let minu = Infinity, maxu = -Infinity, minv = Infinity, maxv = -Infinity;
-        for (const a of this.bez.anchors) {
-            if (a[0] < minu) minu = a[0];
-            if (a[0] > maxu) maxu = a[0];
-            if (a[1] < minv) minv = a[1];
-            if (a[1] > maxv) maxv = a[1];
-        }
-        return { minu: minu - m, maxu: maxu + m, minv: minv - m, maxv: maxv + m };
+        const b = polygonBounds(this.bez.anchors);
+        return { minu: b.minx - m, maxu: b.maxx + m, minv: b.miny - m, maxv: b.maxy + m };
     }
-
-    _evtPt(e) { const r = this.el.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
 
     // Hit-test a point against the editable bits (pure math in overlay-geom.js): the selected
     // anchor's two handles (on top), then any anchor. Returns { kind, i, which? } or null.
@@ -304,8 +268,7 @@ export class BezierEditOverlay {
     _onKeyDown(e) {
         if (!this.shape || this._sel < 0) return;
         if (e.key !== "Delete" && e.key !== "Backspace") return;
-        const t = e.target, tag = t && t.tagName;
-        if (t && (t.isContentEditable || tag === "TEXTAREA" || tag === "INPUT")) return;  // not while typing
+        if (isTextEntry(e.target)) return;   // not while typing (the same rule as the controller's keys)
         e.preventDefault();
         const before = this.bez.anchors.length;
         this.bez = deleteAnchor(this.bez, this._sel);
@@ -329,12 +292,10 @@ export class BezierEditOverlay {
     // push the working curve to the host (re-derives membership + re-bakes the white outline)
     _commit() { this.onEdit(cloneBezier(this.bez)); }
 
-    _clear() { if (this.ctx) this.ctx.clearRect(0, 0, this.el.width, this.el.height); }
-
     _redraw() {
         const ctx = this.ctx;
         if (!ctx) return;
-        this._clear();
+        this._clearCanvas();
         if (!this.shape || !this.H || !this._uvPoly) return;
         const toPx = (uv) => applyHomography(this.H, uv);
 
@@ -393,8 +354,7 @@ export class BezierEditOverlay {
 
     destroy() {
         this._stopTracking();
-        window.removeEventListener("resize", this._onResize);
         window.removeEventListener("keydown", this._onKey);
-        if (this.el.parentNode) this.el.parentNode.removeChild(this.el);
+        super.destroy();
     }
 }

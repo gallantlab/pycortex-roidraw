@@ -94,7 +94,7 @@ export class FakeSurfaceAdapter extends ViewerAdapter {
         return { left: within(this._left), right: within(this._right) };
     }
 
-    setOverlayLayer() { this.calls.setOverlayLayer++; }
+    setOverlayLayer() { this.calls.setOverlayLayer++; return true; }   // the contract returns a boolean
     setLayerVisible() {}
     flatten() { this.calls.flatten++; this._flat = true; this._emitMix(); }
     setCameraTarget() {}

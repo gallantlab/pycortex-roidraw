@@ -9,7 +9,10 @@ await build({
     entryPoints: ["index.js"],
     bundle: true,
     format: "iife",
-    globalName: "ROIDrawBundle", // module exports; index.js also sets window.ROIDraw as a side effect
+    // Global name `roidraw`, lowercase, matching pycortex's own module globals (mriview,
+    // svgoverlay, ...) so the file reads native inside a pycortex viewer. index.js also sets
+    // window.ROIDraw — the documented public API (README, bake.py, pycortex docs/roidraw.rst).
+    globalName: "roidraw",
     outfile: "dist/roidraw.bundle.js",
     loader: { ".css": "text" },
     target: ["es2018"],

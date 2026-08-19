@@ -6,7 +6,7 @@ _Current status file. Most recent session at top._
 
 Review of the whole tree against `~/CLAUDE/PYCORTEX/CODE.REVIEW.md` (style conformity, language
 conformity, doc/code consistency, and "many routes touch the same data" redundancy). Baseline was
-161 JS + 12 Python tests green. **Committed + pushed to `main` this session** (the "clean" at the
+161 JS + 12 Python tests green. **Committed + pushed as `main` @ `ebf2dac`** (the "clean" at the
 end); the review report is the Artifact "Roidraw Review — August 2026": https://claude.ai/code/artifact/d5aa7ff9-5a71-4e2c-be83-9bb6d50f6689 (pass `url=` to republish).
 
 ### Bugs fixed

@@ -10,13 +10,16 @@
  *
  * H is a row-major 9-array [h0..h8]:  [u' v' w'] = H * [x y 1];  result = [u'/w', v'/w'].
  *
- * No Hartley normalization: solving the normal equations squares the condition number, which would
- * matter for arbitrary pixel coordinates, but our `src` is uv in [0,1]^2 and already well scaled.
+ * No Hartley normalization. The callers fit uv -> px, so `src` is uv in [0,1]^2 but `dst` is screen
+ * pixels (hundreds to thousands), and the normal equations — which square the condition number —
+ * mix O(1) and O(px^2) terms. At viewport scales double precision absorbs that (the transform tests
+ * round-trip to ~1e-6); normalizing both point sets is the fix if a caller ever needs more.
  */
 
 const PIVOT_EPS = 1e-12;   // Gaussian-elimination pivot below this ⇒ treat the system as singular
-const W_EPS = 1e-12;       // projective divisor |w| below this ⇒ clamp (point on/near the vanishing line)
+const W_EPS = 1e-12;       // projective divisor |w| below this ⇒ no image (point on/near the vanishing line)
 const DET_EPS = 1e-12;     // |det| below this ⇒ the homography isn't invertible
+const SPAN_RATIO_MIN = 1e-6; // minor/major covariance eigenvalue ratio below this ⇒ points are collinear
 
 /* Solve A x = b for an n x n system (Gaussian elimination, partial pivoting). Returns x or null. */
 function solve(A, b) {
@@ -58,13 +61,14 @@ function spans2D(pts) {
     const mean = (sxx + syy) / 2, half = (sxx - syy) / 2;
     const d = Math.sqrt(half * half + sxy * sxy);
     const l1 = mean + d, l2 = mean - d;          // covariance eigenvalues
-    return l1 > 0 && l2 >= l1 * 1e-6;
+    return l1 > 0 && l2 >= l1 * SPAN_RATIO_MIN;
 }
 
 /*
  * Fit the homography mapping src -> dst from >= 4 point correspondences (least squares).
- * src, dst: arrays of [x, y] of equal length. Returns a 9-array H, or null if the fit is
- * under-determined (too few / collinear points) or degenerate (non-finite entries) — callers
+ * src, dst: arrays of [x, y] of equal length. Returns a 9-array H, or null if the lengths differ
+ * (the pairing is ambiguous), the fit is under-determined (too few / collinear points) or it is
+ * degenerate (non-finite entries) — callers
  * should keep their last good fit rather than apply a garbage transform.
  *
  * BOTH sides must span two dimensions. A collinear `dst` (an edge-on view of the flatmap, where
@@ -72,8 +76,8 @@ function spans2D(pts) {
  * would sail past the isFinite check below.
  */
 export function fitHomography(src, dst) {
-    const n = Math.min(src.length, dst.length);
-    if (n < 4 || !spans2D(src) || !spans2D(dst)) return null;
+    const n = src.length;
+    if (n !== dst.length || n < 4 || !spans2D(src) || !spans2D(dst)) return null;
     // Unknowns h0..h7 (h8 fixed to 1). Two equations per point:
     //   h0 x + h1 y + h2          - h6 x u - h7 y u = u
     //            h3 x + h4 y + h5 - h6 x v - h7 y v = v
@@ -100,13 +104,13 @@ export function fitHomography(src, dst) {
     return H;
 }
 
-/* Apply a homography to a point [x, y] -> [u, v]. */
+/* Apply a homography to a point [x, y] -> [u, v], or null when the point has no finite image (it
+ * lies on/near the vanishing line, so the projective divide would give Infinity/NaN). Callers drop
+ * or skip a null point; it must never reach a stored anchor. */
 export function applyHomography(H, pt) {
     const x = pt[0], y = pt[1];
-    let w = H[6] * x + H[7] * y + H[8];
-    // guard the projective divide: a point on/near the vanishing line gives Infinity/NaN, which
-    // must never reach a stored anchor. Clamp a tiny or non-finite w to a tiny magnitude instead.
-    if (!isFinite(w) || Math.abs(w) < W_EPS) w = w < 0 ? -W_EPS : W_EPS;
+    const w = H[6] * x + H[7] * y + H[8];
+    if (!isFinite(w) || Math.abs(w) < W_EPS) return null;
     return [(H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w];
 }
 

@@ -3,7 +3,7 @@ import assert from "node:assert";
 import {
     fitClosedBezier, bezierFromAnchors, evalClosedBezier, catmullRomHandles,
     cloneBezier, moveAnchor, moveHandle, setAnchorSmooth, splitSegment, deleteAnchor,
-    nearestOnClosedBezier, nearestOnOpenBezier, nearestOnBezier,
+    nearestOnBezier,
     fitOpenBezier, evalOpenBezier, evalBezier, isClosed, segCount,
 } from "../core/bezier.js";
 
@@ -35,6 +35,25 @@ test("fitClosedBezier: dedupes a repeated closing point", () => {
 test("fitClosedBezier: returns null for < 3 points", () => {
     assert.strictEqual(fitClosedBezier([[0, 0], [1, 1]]), null);
     assert.strictEqual(fitClosedBezier(null), null);
+});
+
+test("fitClosedBezier: null when fewer than 3 DISTINCT points remain (a closing repeat doesn't count)", () => {
+    assert.strictEqual(fitClosedBezier([[0, 0], [1, 0], [0, 0]]), null);
+    assert.strictEqual(fitClosedBezier([[0, 0], [0, 0], [1, 0], [1, 0]]), null);
+    assert.strictEqual(fitClosedBezier([[2, 2], [2, 2], [2, 2]]), null);
+});
+
+test("fitClosedBezier: consecutive repeats mid-ring never become zero-length edges", () => {
+    // a slow drag repeats points; with a tiny epsilon RDP keeps every distinct point, so a surviving
+    // duplicate would show up as two identical adjacent anchors
+    const ring = [[0, 0], [1, 0], [1, 0], [1, 1], [1, 1], [1, 1], [0, 1], [0, 0]];
+    const bez = fitClosedBezier(ring, { epsilon: 1e-6 });
+    assert.strictEqual(bez.anchors.length, 4);
+    const a = bez.anchors;
+    for (let i = 0; i < a.length; i++) {
+        const b = a[(i + 1) % a.length];
+        assert.ok(a[i][0] !== b[0] || a[i][1] !== b[1], `anchors ${i} and ${(i + 1) % a.length} coincide`);
+    }
 });
 
 test("fitClosedBezier: fit is independent of where the ring starts (seam at a stable extreme)", () => {
@@ -225,9 +244,9 @@ test("deleteAnchor: closed bezier anchors are unaffected by the open-endpoint no
     assert.ok(d.smooth.every((s) => s === true), "closed bezier anchors remain smooth after deletion");
 });
 
-test("nearestOnClosedBezier: finds a point on the curve near a query", () => {
+test("nearestOnBezier: finds a point on a closed curve near a query", () => {
     const bez = bezierFromAnchors(sq);
-    const hit = nearestOnClosedBezier(bez, [0.5, -0.2], 24);   // near the bottom edge (anchor0->anchor1)
+    const hit = nearestOnBezier(bez, [0.5, -0.2], 24);   // near the bottom edge (anchor0->anchor1)
     assert.ok(hit && hit.dist < 0.3);
     assert.ok(hit.seg >= 0 && hit.seg < 4 && hit.t >= 0 && hit.t <= 1);
 });
@@ -313,6 +332,14 @@ test("catmullRomHandles: closed still wraps (regression)", () => {
 
 function sub(a, b) { return [a[0] - b[0], a[1] - b[1]]; }
 
+test("cloneBezier: an OPEN curve's missing/short smooth[] pads with the bezierFromAnchors rule (endpoints are corners)", () => {
+    const pts = [[0, 0], [1, 1], [2, 0], [3, 1]];
+    const raw = { closed: false, anchors: pts, inHandles: pts, outHandles: pts };
+    assert.deepStrictEqual(cloneBezier(raw).smooth, [false, true, true, false]);
+    assert.deepStrictEqual(cloneBezier({ ...raw, smooth: [false, false] }).smooth, [false, false, true, false]);
+    assert.deepStrictEqual(cloneBezier(raw).smooth, bezierFromAnchors(pts, false).smooth);
+});
+
 test("cloneBezier: round-trips an open curve", () => {
     const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0]]);
     const c = cloneBezier(bez);
@@ -373,34 +400,32 @@ test("moveAnchor: preserves the open flag", () => {
     assert.strictEqual(moveAnchor(bez, 1, [1, 5]).closed, false);
 });
 
-test("nearestOnOpenBezier: finds a point on a straight open curve", () => {
+test("nearestOnBezier: finds a point on a straight open curve", () => {
     const bez = fitOpenBezier([[0, 0], [4, 0]]);
-    const hit = nearestOnOpenBezier(bez, [2, 1], 32);
+    const hit = nearestOnBezier(bez, [2, 1], 32);
     assert.strictEqual(hit.seg, 0);
     assert.ok(near(hit.point[1], 0, 1e-6));
     assert.ok(near(hit.dist, 1, 1e-3));
 });
 
-test("nearestOnOpenBezier: never reports the phantom closing segment", () => {
+test("nearestOnBezier: never reports an open curve's phantom closing segment", () => {
     // an L: the closing segment (end -> start) would pass near [0.2,0.2]; an open curve has none
     const bez = fitOpenBezier([[0, 2], [0, 0], [2, 0]]);
-    const hit = nearestOnOpenBezier(bez, [1.6, 1.6], 32);
+    const hit = nearestOnBezier(bez, [1.6, 1.6], 32);
     assert.ok(hit.dist > 1.0, "expected far from the open curve, got " + hit.dist);
 });
 
-test("nearestOnOpenBezier: needs 2 anchors", () => {
-    assert.strictEqual(nearestOnOpenBezier({ closed: false, anchors: [[0, 0]] }, [0, 0]), null);
-});
-
-test("nearestOnBezier: dispatches on the closed flag", () => {
-    const bez = fitOpenBezier([[0, 0], [4, 0]]);
-    assert.deepStrictEqual(nearestOnBezier(bez, [2, 1], 32), nearestOnOpenBezier(bez, [2, 1], 32));
+test("nearestOnBezier: an open curve needs 2 anchors, a closed one 3", () => {
+    assert.strictEqual(nearestOnBezier({ closed: false, anchors: [[0, 0]] }, [0, 0]), null);
+    const two = { anchors: [[0, 0], [1, 0]], inHandles: [[0, 0], [1, 0]], outHandles: [[0, 0], [1, 0]] };
+    assert.strictEqual(nearestOnBezier({ ...two, closed: true }, [0, 0]), null);
+    assert.ok(nearestOnBezier({ ...two, closed: false }, [0, 0]));
 });
 
 /* ---------------------------------------------------------------------------------------------
  * Out-of-range guards. The edit overlay holds a drag target `{i, which}` across events; if the
- * anchor list shrinks under it (Delete pressed mid-drag), a stale `i` used to write past the end
- * of the handle arrays, silently desynchronizing their lengths from `anchors`.
+ * anchor list shrinks under it (Delete pressed mid-drag), the stale `i` must not write past the
+ * end of the handle arrays and desynchronize their lengths from `anchors`.
  * ------------------------------------------------------------------------------------------- */
 
 test("moveAnchor: an out-of-range index is a no-op, not array corruption", () => {
@@ -444,10 +469,8 @@ test("moveAnchor/moveHandle: an in-range index still works (guard isn't over-bro
 });
 
 /*
- * All five edit ops share ONE out-of-range contract: return an unchanged copy. They used to
- * disagree — moveAnchor/moveHandle refused, setAnchorSmooth and splitSegment threw a TypeError,
- * and setAnchorSmooth on a closed curve silently grew smooth[] past anchors[] with holes in it.
- * The edit overlay carries drag/hover/selection indices across pointer events, so any of these can
+ * All five edit ops share ONE out-of-range contract: return an unchanged copy — no throw, and no
+ * smooth[] grown past anchors[] with holes in it. The edit overlay carries drag/hover/selection indices across pointer events, so any of these can
  * be handed an index that a concurrent Delete has invalidated; the caller must not have to know
  * which op it is calling.
  */
@@ -473,6 +496,41 @@ test("edit ops: every one is a no-op on an out-of-range anchor/segment index", (
             }
         }
     }
+});
+
+test("splitSegment: t outside the open interval (0,1) is a no-op copy", () => {
+    const bez = fitClosedBezier(sq);
+    for (const t of [0, 1, -0.5, 1.5, NaN, undefined]) {
+        const r = splitSegment(bez, 0, t);
+        assert.notStrictEqual(r, bez);
+        assert.deepStrictEqual(r, cloneBezier(bez), "t=" + t + " changed the curve");
+    }
+    assert.strictEqual(splitSegment(bez, 0, 0.25).anchors.length, bez.anchors.length + 1);
+});
+
+test("moveHandle: an open curve's unused endpoint handles ('in' at 0, 'out' at n-1) don't move", () => {
+    const bez = fitOpenBezier([[0, 0], [1, 1], [2, 0], [3, 1]]);
+    const n = bez.anchors.length;
+    assert.deepStrictEqual(moveHandle(bez, 0, "in", [9, 9]), cloneBezier(bez));
+    assert.deepStrictEqual(moveHandle(bez, n - 1, "out", [9, 9]), cloneBezier(bez));
+    // the live handles still move, and never mirror into the unused one
+    const m0 = moveHandle(bez, 0, "out", [0.5, 0.2]);
+    assert.deepStrictEqual(m0.outHandles[0], [0.5, 0.2]);
+    assert.deepStrictEqual(m0.inHandles[0], bez.anchors[0]);
+    const marked = { ...cloneBezier(bez), smooth: [true, true, true, true] };  // a file that marked an endpoint smooth
+    assert.deepStrictEqual(moveHandle(marked, n - 1, "in", [2.5, 0.5]).outHandles[n - 1], bez.anchors[n - 1]);
+    // a closed ring has no unused handle
+    const ring = fitClosedBezier(sq);
+    assert.deepStrictEqual(moveHandle(ring, 0, "in", [-1, -1]).inHandles[0], [-1, -1]);
+});
+
+test("deleteAnchor: a refusal at the anchor floor returns a copy, never the input itself", () => {
+    const tri = bezierFromAnchors([[0, 0], [1, 0], [0, 1]]);
+    const r = deleteAnchor(tri, 0);
+    assert.notStrictEqual(r, tri);
+    assert.deepStrictEqual(r, tri);
+    r.anchors[0][0] = 99;
+    assert.strictEqual(tri.anchors[0][0], 0, "the refusal must not alias the input");
 });
 
 test("splitSegment: an open curve has no wrap segment, so seg = n-1 is out of range", () => {

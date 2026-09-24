@@ -5,29 +5,20 @@
  */
 
 import { TOOL, asTool } from "../core/draw-mode.js";
+import { button } from "./dom-utils.js";
 
-/* A panel button that fires `on` when clicked. Every button here is type="button" so it can't
- * submit a surrounding form the host may have wrapped the page in. */
-function button(label, on, className) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.textContent = label;
-    if (className) b.className = className;
-    b.onclick = () => on();
-    return b;
-}
+const noop = () => {};
 
 export class DrawPanel {
     // Every callback is normalized to a no-op once, here, so no call site has to guard.
     constructor({ onExport, onExportSulci, onImport, onClear, onRemove, onEdit, onTool } = {}) {
-        this.onRemove = onRemove || (() => {});
-        this.onEdit = onEdit || (() => {});
-        this.onTool = onTool || (() => {});
-        const exportRois = onExport || (() => {});
-        const exportSulci = onExportSulci || (() => {});
-        const importFile = onImport || (() => {});
-        const clearAll = onClear || (() => {});
-        this._editingId = null;
+        this.onExport = onExport || noop;
+        this.onExportSulci = onExportSulci || noop;
+        this.onImport = onImport || noop;
+        this.onClear = onClear || noop;
+        this.onRemove = onRemove || noop;
+        this.onEdit = onEdit || noop;
+        this.onTool = onTool || noop;
 
         const el = document.createElement("div");
         el.className = "roidraw-panel";
@@ -56,7 +47,7 @@ export class DrawPanel {
         el.appendChild(this.statusEl);
 
         // big, obvious "finish editing" control — shown only while a shape is being edited
-        this.doneEl = button("✓ Done editing", () => this.onEdit(null), "roidraw-done");
+        this.doneEl = button("✓ Done editing", () => this.onEdit(null), "roidraw-action roidraw-done");
         this.doneEl.style.display = "none";
         el.appendChild(this.doneEl);
 
@@ -64,25 +55,25 @@ export class DrawPanel {
         this.listEl.className = "roidraw-list";
         el.appendChild(this.listEl);
 
-        el.appendChild(button("Export ROIs (JSON)", exportRois));
-        el.appendChild(button("Export sulci (SVG)", exportSulci));
+        el.appendChild(button("Export ROIs (JSON)", () => this.onExport(), "roidraw-action"));
+        el.appendChild(button("Export sulci (SVG)", () => this.onExportSulci(), "roidraw-action"));
 
         // Import reads the ROI JSON only. Sulci export is one-way, into pycortex's own overlays.svg.
         const lab = document.createElement("label");
         lab.textContent = "Import: ";
         const inp = document.createElement("input");
         inp.type = "file";
-        inp.accept = "application/json";
+        inp.accept = ".json,application/json";
         inp.onchange = (e) => {
             const f = e.target.files && e.target.files[0];
-            if (f) importFile(f);
+            if (f) this.onImport(f);
             e.target.value = "";
             e.target.blur();   // don't keep keyboard focus on the file input (Shift-to-pan needs body focus)
         };
         lab.appendChild(inp);
         el.appendChild(lab);
 
-        el.appendChild(button("Clear all", clearAll));
+        el.appendChild(button("Clear all", () => this.onClear(), "roidraw-action"));
 
         this.msgEl = document.createElement("div");
         this.msgEl.className = "roidraw-msg";
@@ -90,15 +81,11 @@ export class DrawPanel {
 
         document.body.appendChild(el);
         this.el = el;
-        // Paint the initial segmented-control state WITHOUT firing onTool: this.panel isn't
-        // assigned yet in ROIDrawer's constructor, and onTool routes through this.panel.setStatus.
+        // Paint the initial segmented-control state WITHOUT firing onTool: the owner is still
+        // constructing this panel and may not be ready to handle a callback yet.
         this._reflectTool();
         this.renderList([]);
     }
-
-    // The id of the shape (ROI or sulcus) being edited — its row is highlighted, its edit button
-    // reads "editing", and the "✓ Done editing" control shows — or null.
-    setEditingId(id) { this._editingId = id; }
 
     /* Paint the segmented control to match this.tool. Fires no callback. */
     _reflectTool() {
@@ -127,10 +114,13 @@ export class DrawPanel {
     setVisible(on) { this.el.style.display = on ? "" : "none"; }
 
     // Remove the panel from the DOM (every UI component has a destroy(); ROIDrawer calls them all).
-    destroy() { if (this.el && this.el.parentNode) this.el.parentNode.removeChild(this.el); this.el = null; }
+    destroy() { this.el?.remove(); this.el = null; }
 
-    renderList(shapes) {
-        const ed = shapes.find((s) => s.id === this._editingId);
+    // Rebuild the shape list. `editingId` is the id of the shape (ROI or sulcus) being edited — its
+    // row is highlighted, its edit button reads "editing", and the "✓ Done editing" control shows —
+    // or null.
+    renderList(shapes, editingId = null) {
+        const ed = editingId == null ? null : shapes.find((s) => s.id === editingId);
         this.doneEl.style.display = ed ? "" : "none";
         if (ed) this.doneEl.textContent = "✓ Done editing “" + ed.name + "”";
 
@@ -144,7 +134,7 @@ export class DrawPanel {
             return;
         }
         for (const s of shapes) {
-            const editing = s.id === this._editingId;
+            const editing = s === ed;
             const sulcus = s.kind === "sulcus";
             const row = document.createElement("div");
             row.className = "roidraw-roi" + (editing ? " roidraw-roi--editing" : "");

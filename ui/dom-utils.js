@@ -1,7 +1,19 @@
 /*
- * dom-utils.js — small DOM predicates shared by the UI and the controller, so every keyboard
- * handler in roidraw agrees on the same rule. Host-agnostic.
+ * dom-utils.js — small DOM helpers shared by the UI and the controller: the one button factory
+ * every roidraw control uses, and the text-entry predicate every keyboard handler agrees on.
+ * Host-agnostic.
  */
+
+/* A button that fires `onClick` when clicked. Every roidraw button is type="button" so it can't
+ * submit a surrounding form the host may have wrapped the page in. */
+export function button(label, onClick, className) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    if (className) b.className = className;
+    b.onclick = () => onClick();
+    return b;
+}
 
 /* Is `el` a text-entry target? Global shortcuts (Shift-to-pan, Esc, Delete on a selected anchor)
  * must stay out of the way while the user types, but a file input, button, checkbox, slider, or

@@ -1,5 +1,4 @@
 """Tests for the optional ROI/sulcus-drawing feature (cortex.webgl.make_static(roidraw=True))."""
-import cortex.webgl  # noqa: F401  (ensures cortex.webgl is importable)
 from cortex.webgl import serve
 from cortex.webgl.FallbackLoader import FallbackLoader
 

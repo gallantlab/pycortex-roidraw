@@ -116,3 +116,37 @@ export function centroid(points) {
     for (let i = 0; i < points.length; i++) { sx += points[i][0]; sy += points[i][1]; }
     return [sx / points.length, sy / points.length];
 }
+
+/* Squared Euclidean distance between two [x, y] points. */
+export function sqDist(a, b) {
+    const dx = a[0] - b[0], dy = a[1] - b[1];
+    return dx * dx + dy * dy;
+}
+
+/* Index of the point in `points` nearest `q` (the first one on a tie), or -1 if `points` is empty. */
+export function nearestIndex(points, q) {
+    let best = -1, bd = Infinity;
+    for (let i = 0; i < points.length; i++) {
+        const d = sqDist(points[i], q);
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
+
+const samePoint = (a, b) => a[0] === b[0] && a[1] === b[1];
+
+/* Drop consecutive duplicates (a slow drag emits repeats at the same pixel). `same(a, b)` decides
+ * equality; the default compares [x, y] points exactly. Returns a new array of the kept items. */
+export function dedupeConsecutive(items, same = samePoint) {
+    const out = [];
+    for (const p of items) if (!out.length || !same(out[out.length - 1], p)) out.push(p);
+    return out;
+}
+
+/* dedupeConsecutive for a CLOSED ring: also drops a last item that repeats the first, so the ring
+ * has no zero-length closing edge. */
+export function dedupeRing(items, same = samePoint) {
+    const out = dedupeConsecutive(items, same);
+    if (out.length > 1 && same(out[0], out[out.length - 1])) out.pop();
+    return out;
+}

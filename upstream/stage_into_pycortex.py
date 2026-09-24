@@ -6,8 +6,8 @@ in gallantlab/pycortex#642).
 
     python upstream/stage_into_pycortex.py /path/to/pycortex
 
-Four changes, modeled line-for-line on the merged precedent for optional webgl features (the
-guided-tour PR, gallantlab/pycortex#660: a template block gated on a make_static flag):
+Four changes, modeled line-for-line on the pattern the guided-tour PR (gallantlab/pycortex#660)
+uses for an optional webgl feature: a template block gated on a make_static flag.
 
   1. dist/roidraw.bundle.js  ->  cortex/webgl/resources/js/roidraw.js
      One self-contained file, deliberately: the CSS ships inside it because
@@ -21,16 +21,20 @@ guided-tour PR, gallantlab/pycortex#660: a template block gated on a make_static
   3. cortex/webgl/view.py: `make_static(..., roidraw=False)` — kwarg, docstring entry, and the
      flag passed to the template renderer (Tornado raises on an undefined name, so it must
      always be passed once the template references it).
-  4. upstream/test_webgl_roidraw.py -> cortex/tests/  (mirrors cortex/tests/test_webgl_tour.py).
+  4. upstream/test_webgl_roidraw.py -> cortex/tests/  (mirrors the tour PR's test_webgl_tour.py).
 
-The patch functions are pure string transforms: idempotent (a second run changes nothing and says
-so), and they FAIL LOUDLY naming the missing anchor if pycortex has drifted, rather than staging a
-half-applied feature. Unit-tested without pycortex in test/test_upstream.py.
+The patch functions are pure string transforms. A file counts as already staged only when every one
+of its insertions is present, so a second run changes nothing and says so. They FAIL LOUDLY rather
+than stage a half-applied feature: when an anchor is missing or ambiguous (pycortex has drifted), or
+when a file holds only some of the insertions or a `roidraw` that is not ours. stage() checks every
+target directory and computes every patch before it writes anything. Unit-tested without pycortex
+in test/test_upstream.py.
 
 This script only ever writes inside the checkout you point it at — run it on a branch or a
 scratch worktree, review `git diff`, and that diff is the PR.
 """
 import argparse
+import filecmp
 import os
 import shutil
 
@@ -60,17 +64,20 @@ KWARG_ANCHOR = '    title="Brain",\n'
 KWARG_LINE = "    roidraw=False,\n"
 
 # The bare title block appears twice in view.py (make_static and the mixer viewer share the
-# wording), so the anchor carries the make_static-only line that follows it; the insertion lands
-# between the two, keeping docstring order = kwarg order (title, roidraw, layout).
-DOCSTRING_ANCHOR = (
+# wording), so the anchor also carries the make_static-only layout entry that follows it. The
+# insertion lands between the two, keeping docstring order = kwarg order (title, roidraw, layout).
+DOCSTRING_TITLE = (
     "    title : str, optional\n"
     "        The title that is displayed on the viewer website when it is loaded in\n"
     "        a browser.\n"
+)
+DOCSTRING_LAYOUT = (
     "    layout : None or list of (int, int)\n"
     "        The layout of the viewer subwindows for showing multiple subjects, passed to\n"
     "        the template generator.\n"
     "        Default to None, corresponding to no subwindows.\n"
 )
+DOCSTRING_ANCHOR = DOCSTRING_TITLE + DOCSTRING_LAYOUT
 DOCSTRING_BLOCK = (
     "    roidraw : bool, optional\n"
     "        If True, bake in the in-browser ROI + sulcus drawing tool (draw on the\n"
@@ -86,11 +93,22 @@ GENERATE_ANCHOR = (
 )
 GENERATE_LINE = "        roidraw=bool(roidraw),\n"
 
+# Each insertion as (text before it, the insertion, text after it, description). The anchor that
+# must occur exactly once is before + after; the staged result is before + insertion + after.
+TEMPLATE_INSERTIONS = (
+    (TEMPLATE_ANCHOR, TEMPLATE_BLOCK, "", "template.html include block"),
+)
+VIEW_INSERTIONS = (
+    (KWARG_ANCHOR, KWARG_LINE, "", "view.py make_static kwarg"),
+    (DOCSTRING_TITLE, DOCSTRING_BLOCK, DOCSTRING_LAYOUT, "view.py docstring entry"),
+    (GENERATE_ANCHOR, GENERATE_LINE, "", "view.py tpl.generate argument"),
+)
 
-def _insert_at(text, anchor, insertion, what, keep_lines=None):
-    """Insert `insertion` relative to the unique `anchor`, failing loudly otherwise. By default the
-    insertion goes after the whole anchor; with `keep_lines` = n, only the anchor's first n lines
-    stay before it (the rest of the anchor is context that makes the match unique)."""
+
+def _insert_at(text, before, insertion, after, what):
+    """Insert `insertion` between `before` and `after`, whose concatenation must occur exactly once
+    in `text` (`after` is context that makes the match unique); fail loudly otherwise."""
+    anchor = before + after
     n = text.count(anchor)
     if n != 1:
         raise SystemExit(
@@ -98,35 +116,48 @@ def _insert_at(text, anchor, insertion, what, keep_lines=None):
             "pycortex has drifted; update upstream/stage_into_pycortex.py.\n"
             "anchor:\n%s" % (what, n, anchor)
         )
-    if keep_lines is None:
-        return text.replace(anchor, anchor + insertion, 1)
-    lines = anchor.splitlines(keepends=True)
-    head, tail = "".join(lines[:keep_lines]), "".join(lines[keep_lines:])
-    return text.replace(anchor, head + insertion + tail, 1)
+    return text.replace(anchor, before + insertion + after, 1)
+
+
+def _apply(text, insertions, name):
+    """Return (new_text, changed). Unchanged only when every insertion is already in place; a file
+    holding some of them, or a `roidraw` that none of them put there, is neither staged nor safe
+    to patch, so it fails loudly."""
+    present = [before + insertion + after in text for before, insertion, after, _ in insertions]
+    if all(present):
+        return text, False
+    if any(present) or MARKER in text:
+        missing = [what for (_, _, _, what), ok in zip(insertions, present) if not ok]
+        raise SystemExit(
+            "cannot stage %s: it is partly staged or already mentions %r, but these insertions are "
+            "missing: %s.\nRestore the file (git checkout) and re-run."
+            % (name, MARKER, ", ".join(missing))
+        )
+    for before, insertion, after, what in insertions:
+        text = _insert_at(text, before, insertion, after, what)
+    return text, True
 
 
 def patch_template(html):
     """Return (new_html, changed): add the {% if roidraw %} include block."""
-    if MARKER in html:
-        return html, False
-    return _insert_at(html, TEMPLATE_ANCHOR, TEMPLATE_BLOCK, "template.html include block"), True
+    return _apply(html, TEMPLATE_INSERTIONS, "template.html")
 
 
 def patch_view(py):
     """Return (new_py, changed): add the make_static roidraw kwarg, docstring, and pass-through."""
-    if MARKER in py:
-        return py, False
-    py = _insert_at(py, KWARG_ANCHOR, KWARG_LINE, "view.py make_static kwarg")
-    py = _insert_at(py, DOCSTRING_ANCHOR, DOCSTRING_BLOCK, "view.py docstring entry", keep_lines=3)
-    py = _insert_at(py, GENERATE_ANCHOR, GENERATE_LINE, "view.py tpl.generate argument")
-    return py, True
+    return _apply(py, VIEW_INSERTIONS, "view.py")
 
 
 def stage(pycortex_dir):
     """Stage all four changes into the checkout. Returns the list of paths written."""
     webgl = os.path.join(pycortex_dir, "cortex", "webgl")
+    js_dir = os.path.join(webgl, "resources", "js")
+    tests_dir = os.path.join(pycortex_dir, "cortex", "tests")
     if not os.path.isfile(os.path.join(webgl, "template.html")):
         raise SystemExit("%s does not look like a pycortex checkout (no cortex/webgl/template.html)" % pycortex_dir)
+    for d in (js_dir, tests_dir):
+        if not os.path.isdir(d):
+            raise SystemExit("%s does not look like a pycortex checkout (no %s)" % (pycortex_dir, d))
     if not os.path.isfile(BUNDLE):
         raise SystemExit("missing %s — run `npm run build` first" % BUNDLE)
 
@@ -146,18 +177,18 @@ def stage(pycortex_dir):
 
     def copy(src, dst):
         """Copy unless the destination already has identical content (keeps reruns no-ops)."""
-        if os.path.isfile(dst) and open(dst, "rb").read() == open(src, "rb").read():
+        if os.path.isfile(dst) and filecmp.cmp(src, dst, shallow=False):
             print("already staged: %s" % dst)
         else:
             shutil.copyfile(src, dst)
             written.append(dst)
 
-    copy(BUNDLE, os.path.join(webgl, "resources", "js", "roidraw.js"))
+    copy(BUNDLE, os.path.join(js_dir, "roidraw.js"))
     for path, new in patched:
         with open(path, "w", encoding="utf-8") as f:
             f.write(new)
         written.append(path)
-    copy(TEST_SRC, os.path.join(pycortex_dir, "cortex", "tests", "test_webgl_roidraw.py"))
+    copy(TEST_SRC, os.path.join(tests_dir, "test_webgl_roidraw.py"))
     return written
 
 

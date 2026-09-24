@@ -4,8 +4,11 @@
  * whole feature ships as a single self-contained file: dist/roidraw.bundle.js.
  */
 import { build } from "esbuild";
+import { fileURLToPath } from "node:url";
 
 await build({
+    // Resolve every path from this file's directory, so the build works from any cwd.
+    absWorkingDir: fileURLToPath(new URL(".", import.meta.url)),
     entryPoints: ["index.js"],
     bundle: true,
     format: "iife",

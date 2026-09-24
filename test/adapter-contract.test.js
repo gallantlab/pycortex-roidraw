@@ -37,3 +37,16 @@ test("FakeSurfaceAdapter overrides every REQUIRED contract method", () => {
             `FakeSurfaceAdapter is missing required contract method ${n}`);
     }
 });
+
+test("the optional methods' defaults work on an adapter that implements only the REQUIRED set", () => {
+    const a = new FakeSurfaceAdapter();
+    const target = [];
+    a.setCameraTarget = (xyz) => target.push(xyz);
+    assert.strictEqual(a.measureFrame(), null, "no framing by default");
+    assert.strictEqual(a.exportSulciMarkup([]), null, "no overlay coordinate space by default");
+    a.animateCamera({ target: [1, 2, 3], radius: 42, mix: 1 });   // snaps; mix is ignored
+    assert.deepStrictEqual(target, [[1, 2, 3]]);
+    assert.strictEqual(a.cameraRadius(), 42);
+    for (const n of ["applyHostDefaults", "collapseControlPanel", "setControlPanelVisible", "destroy"])
+        assert.doesNotThrow(() => a[n](true), `${n} default should be a no-op`);
+});

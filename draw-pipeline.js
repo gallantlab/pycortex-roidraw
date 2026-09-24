@@ -12,11 +12,16 @@ import { selectInPolygon } from "./core/selection.js";
 import { buildOutline, pickLabelVertex } from "./core/outline.js";
 import { fitClosedBezier, evalClosedBezier, fitOpenBezier, evalOpenBezier } from "./core/bezier.js";
 import { fitHomography, applyHomography, invertHomography } from "./core/transform.js";
+import { nearestIndex, sqDist } from "./core/geom.js";
+import { HEMIS } from "./core/hemis.js";
 import { uvPxCorrespondences } from "./adapter/viewer-adapter.js";
 
-const BEZIER_SAMPLES = 16;    // samples/segment when rasterizing a bezier to a uv polygon for selection
-const OUTLINE_EPS_UV = 0.003; // RDP tolerance (uv units) for the outline ring built in uv space
-const TRACE_SAMPLES = 24;     // samples/segment when locating a curve's parametric midpoint
+export const BEZIER_SAMPLES = 16;  // samples/segment when rasterizing a bezier to a uv polygon for selection
+export const TRACE_SAMPLES = 24;   // samples/segment when locating a curve's parametric midpoint
+// RDP tolerance (uv units) for the outline ring built in uv space. It simplifies the densely
+// sampled, already-smooth bezier polygon only to choose which boundary vertices the ring snaps to,
+// so it sits a little under bezier.js's anchor-picking UV_RDP_EPSILON (0.004) to hug the curve.
+const OUTLINE_EPS_UV = 0.003;
 
 // Map an outline ring [{h,g}] to flat-UV points [[u,v],...], dropping vertices with no uv.
 function ringToUv(adapter, ring) {
@@ -26,30 +31,58 @@ function ringToUv(adapter, ring) {
     return uv;
 }
 
-// Back-fill an editable bezier for a v1 ROI (one saved before the bezier feature) from its stored
-// outline ring, so imported shapes edit just like freshly drawn ones. Returns a bezier or null.
-export function backfillBezier(adapter, ring) {
-    return fitRingBezier(adapter, ring);
-}
-
 /* Fit a closed bezier to a vertex ring mapped into flat-UV, or null when fewer than 3 of its
- * vertices have uv. The one rule for "ring -> bezier", shared by the lasso path and v1 back-fill. */
-function fitRingBezier(adapter, ring) {
+ * vertices have uv. The one rule for "ring -> bezier", shared by the lasso path and the import
+ * back-fill of an ROI that has an outline but no bezier (so it edits like a freshly drawn one). */
+export function backfillBezier(adapter, ring) {
     const ringUv = ringToUv(adapter, ring);
     return ringUv && ringUv.length >= 3 ? fitClosedBezier(ringUv) : null;
 }
 
-// Pick a label vertex for an imported ROI whose file lacked one, using the SAME rule as freshly
-// drawn ROIs (pickLabelVertex: the boundary vertex nearest the centroid, computed in flat-UV).
-// Returns {h,g} or null. So reloaded and fresh ROIs label identically.
-export function backfillLabel(adapter, ring) {
-    if (!ring) return null;
+/* The vertex of `verts` ([{h,g}...]) nearest their flat-UV centroid, or null if none has uv. */
+function labelFromVertices(adapter, verts) {
     const sel = { left: [], right: [], px: { left: [], right: [] } };
-    for (const o of ring) {
+    for (const o of verts) {
         const uv = adapter.vertexUV(o);
         if (uv) { sel[o.h].push(o.g); sel.px[o.h].push(uv); }   // feed uv where pickLabelVertex expects px
     }
     return pickLabelVertex(sel);
+}
+
+/* A label vertex from an outline ring alone: the RING vertex nearest the ring's centroid —
+ * necessarily a boundary vertex. The last resort for an ROI with neither members nor a bezier.
+ * Returns {h,g} or null. */
+export function backfillLabel(adapter, ring) {
+    return ring ? labelFromVertices(adapter, ring) : null;
+}
+
+/*
+ * Complete ROIs just imported from a file, in place: fit a bezier for any that has an outline but
+ * no bezier, then fill a missing labelVert with the rule freshly drawn ROIs use — the MEMBER nearest
+ * the centroid. The members come from the file when it lists them (cheap), else from the bezier
+ * (a full uv selection); an ROI with neither falls back to its outline ring (backfillLabel).
+ * Non-ROI shapes are skipped. Returns how many beziers were fitted.
+ */
+export function backfillImported(adapter, rois) {
+    let fitted = 0;
+    for (const roi of rois) {
+        if (roi.kind && roi.kind !== "roi") continue;
+        if (!roi.bezier && roi.outline) {
+            const bez = backfillBezier(adapter, roi.outline);
+            if (bez) { roi.bezier = bez; fitted++; }
+        }
+        if (!roi.labelVert) {
+            const members = [
+                ...(roi.left || []).map((g) => ({ h: "left", g })),
+                ...(roi.right || []).map((g) => ({ h: "right", g })),
+            ];
+            let lv = members.length ? labelFromVertices(adapter, members) : null;
+            if (!lv && roi.bezier) { const d = roiFromBezier(adapter, roi.bezier); lv = d && d.labelVert; }
+            lv = lv || backfillLabel(adapter, roi.outline);
+            if (lv) roi.labelVert = lv;
+        }
+    }
+    return fitted;
 }
 
 /*
@@ -81,7 +114,7 @@ export function deriveRoiFromLasso(adapter, pts) {
     if (!sel0.total) return { left: [], right: [], outline: null, labelVert: null, bezier: null, total: 0 };
 
     const lassoRing = buildOutline(pts, sel0);                       // px-space ring of the stroke
-    const fitted = fitRingBezier(adapter, lassoRing);
+    const fitted = backfillBezier(adapter, lassoRing);
     // Prefer bezier-derived membership so the stored vertices match the editable curve. But only keep
     // the bezier if it actually encloses something: a curve that re-derives to zero vertices (a very
     // thin/tiny ROI the smoothing shrank past every vertex) would leave the bezier — the source of
@@ -105,21 +138,19 @@ export function deriveRoiFromLasso(adapter, pts) {
 export function nearestVertexTo(adapter, uv) {
     const all = adapter.allVertexUV();
     let best = null, bd = Infinity;
-    for (const h of ["left", "right"]) {
+    for (const h of HEMIS) {
         const p = all[h];
-        if (!p) continue;
-        for (let k = 0; k < p.uv.length; k++) {
-            const dx = p.uv[k][0] - uv[0], dy = p.uv[k][1] - uv[1], d = dx * dx + dy * dy;
-            if (d < bd) { bd = d; best = { h, g: p.idx[k] }; }
-        }
+        const k = p ? nearestIndex(p.uv, uv) : -1;
+        if (k < 0) continue;
+        const d = sqDist(p.uv[k], uv);
+        if (d < bd) { bd = d; best = { h, g: p.idx[k] }; }
     }
     return best;
 }
 
 /* The label vertex for an OPEN curve: the surface vertex nearest the curve's midpoint sample.
  * Shared by the initial trace and by every subsequent edit, so a reshaped sulcus relabels the
- * same way a freshly traced one does. (Cf. backfillLabel, which does the analogous job for an
- * ROI ring.) Returns {h,g} or null.
+ * same way a freshly traced one does. Returns {h,g} or null.
  *
  * FOR THE LIVE IN-VIEWER OVERLAY ONLY. The WebGL viewer places a label by vertex index
  * (`data-ptidx`); the exported overlays.svg must NOT carry one, because pycortex computes sulcus
@@ -156,10 +187,10 @@ export function curveFromTrace(adapter, pts) {
     const Hinv = invertHomography(H);
     if (!Hinv) return null;
 
-    // applyHomography always returns a point — it clamps a near-zero projective divisor rather than
-    // failing — so there is nothing to filter here. fitOpenBezier dedupes and rejects a stroke that
-    // collapses to fewer than 2 distinct points.
-    const bezier = fitOpenBezier(pts.map((p) => applyHomography(Hinv, p)));
+    // drop stroke points with no uv image (on the vanishing line: applyHomography returns null).
+    // fitOpenBezier dedupes and rejects a stroke that collapses to fewer than 2 distinct points.
+    const uvPts = pts.map((p) => applyHomography(Hinv, p)).filter(Boolean);
+    const bezier = fitOpenBezier(uvPts);
     if (!bezier) return null;
 
     return { bezier, labelVert: labelForCurve(adapter, bezier) };

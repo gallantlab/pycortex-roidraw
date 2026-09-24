@@ -7,10 +7,15 @@
 import test from "node:test";
 import assert from "node:assert";
 import { FakeSurfaceAdapter } from "./fake-adapter.js";
-import { deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel, curveFromTrace, nearestVertexTo, labelForCurve } from "../draw-pipeline.js";
+import {
+    deriveRoiFromLasso, roiFromBezier, backfillBezier, backfillLabel, backfillImported, curveFromTrace,
+    nearestVertexTo, labelForCurve, BEZIER_SAMPLES, TRACE_SAMPLES,
+} from "../draw-pipeline.js";
 import { bezierFromAnchors, evalClosedBezier, evalOpenBezier } from "../core/bezier.js";
 import { pointInPolygon } from "../core/geom.js";
 import { fitHomography, applyHomography } from "../core/transform.js";
+import { HEMIS } from "../core/hemis.js";
+import { ShapeSet, FORMAT } from "../core/shape-model.js";
 
 // grid 11x11: vertex (i,j) has subject index i*11+j, uv [i/10, j/10]. px is a REAL rotated/offset
 // projection of uv (see fake-adapter.js), so px-space lassos must round-trip through that transform.
@@ -56,7 +61,7 @@ test("roiFromBezier: membership equals exactly the vertices the sampled curve en
     const a = adapter();
     const bez = bezierFromAnchors([[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7]]);
     // ground truth: brute-force point-in-polygon over the SAME sampled curve the pipeline uses
-    const poly = evalClosedBezier(bez, 16);
+    const poly = evalClosedBezier(bez, BEZIER_SAMPLES);
     const truth = new Set();
     for (const g of a.allVertexUV().left.idx) if (pointInPolygon(uvOf(g), poly)) truth.add(g);
 
@@ -88,18 +93,79 @@ test("backfillBezier: returns null when the ring has too few uv-resolvable point
     assert.strictEqual(backfillBezier(a, [{ h: "left", g: 0 }, { h: "left", g: 1 }]), null);
 });
 
-test("backfillLabel: picks the ring vertex nearest the centroid (same rule as fresh ROIs)", () => {
+test("backfillLabel: picks the ring vertex nearest the ring's centroid", () => {
     const a = adapter();
     // a small square ring around uv (0.4..0.6); the centroid sits at (0.5,0.5). Add a center vertex
     // (5,5)=uv(0.5,0.5) which must win as nearest-to-centroid.
     const corner = (i, j) => ({ h: "left", g: i * 11 + j });
     const ring = [corner(4, 4), corner(6, 4), corner(6, 6), corner(4, 6), corner(5, 5)];
     const lv = backfillLabel(a, ring);
-    assert.deepStrictEqual(lv, { h: "left", g: 5 * 11 + 5 }, "the centre vertex is nearest the centroid");
+    assert.deepStrictEqual(lv, { h: "left", g: 5 * 11 + 5 }, "the center vertex is nearest the centroid");
 });
 
 test("backfillLabel: returns null for an empty/uv-less ring", () => {
     assert.strictEqual(backfillLabel(adapter(), []), null);
+    assert.strictEqual(backfillLabel(adapter(), null), null);
+});
+
+// corners (2,2)(8,2)(8,8)(2,8) as left subject indices i*11+j: the ring encloses the center (5,5)
+const squareRing = () => [2 * 11 + 2, 8 * 11 + 2, 8 * 11 + 8, 2 * 11 + 8].map((g) => ({ h: "left", g }));
+const CENTER = { h: "left", g: 5 * 11 + 5 };
+
+test("backfillImported: an outline-only ROI gets a bezier AND the fresh-ROI label (member nearest the centroid)", () => {
+    const a = adapter();
+    const roi = { kind: "roi", name: "v1", left: [], right: [], outline: squareRing(), labelVert: null, bezier: null };
+    assert.strictEqual(backfillImported(a, [roi]), 1, "one bezier fitted");
+    assert.ok(roi.bezier && roi.bezier.anchors.length >= 3);
+    // the label is an interior MEMBER (the center), not a boundary vertex of the ring
+    assert.deepStrictEqual(roi.labelVert, CENTER);
+    assert.deepStrictEqual(roi.labelVert, roiFromBezier(a, roi.bezier).labelVert, "same rule as roiFromBezier");
+    assert.ok(!roi.outline.some((o) => o.g === roi.labelVert.g));
+});
+
+test("backfillImported: an ROI that lists its members is labeled from them, without re-selecting", () => {
+    const a = adapter();
+    a.allVertexUV = () => { throw new Error("a full selection should not be needed"); };
+    const members = [4 * 11 + 4, 5 * 11 + 5, 6 * 11 + 6];   // a diagonal: the middle one is nearest the centroid
+    const roi = { kind: "roi", left: members, right: [], outline: squareRing(), labelVert: null,
+                  bezier: bezierFromAnchors([[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]) };
+    backfillImported(a, [roi]);
+    assert.deepStrictEqual(roi.labelVert, CENTER);
+});
+
+test("backfillImported: an ROI with a bezier but no label is labeled from that bezier; nothing is re-fitted", () => {
+    const a = adapter();
+    const bezier = bezierFromAnchors([[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]);
+    const roi = { kind: "roi", outline: squareRing(), labelVert: null, bezier };
+    assert.strictEqual(backfillImported(a, [roi]), 0);
+    assert.strictEqual(roi.bezier, bezier, "an existing bezier is kept as is");
+    assert.deepStrictEqual(roi.labelVert, CENTER);
+});
+
+test("backfillImported: keeps existing fields, falls back to the ring label, skips sulci", () => {
+    const a = adapter();
+    const kept = { kind: "roi", outline: squareRing(), labelVert: { h: "left", g: 0 }, bezier: null };
+    // two uv-resolvable vertices: too few to fit a bezier, so the label comes from the ring alone
+    const thin = { kind: "roi", outline: [{ h: "left", g: 0 }, { h: "left", g: 1 }], labelVert: null, bezier: null };
+    const sulcus = { kind: "sulcus", labelVert: null, bezier: null };
+    assert.strictEqual(backfillImported(a, [kept, thin, sulcus]), 1);
+    assert.deepStrictEqual(kept.labelVert, { h: "left", g: 0 }, "an existing label is never replaced");
+    assert.ok(kept.bezier, "but a missing bezier is still fitted");
+    assert.strictEqual(thin.bezier, null);
+    assert.deepStrictEqual(thin.labelVert, backfillLabel(a, thin.outline));
+    assert.strictEqual(sulcus.labelVert, null);
+    assert.strictEqual(sulcus.bezier, null);
+});
+
+test("backfillImported: a file's malformed bezier (handles missing) is re-fitted from the outline", () => {
+    const a = adapter();
+    const doc = { format: FORMAT, rois: [{ name: "x", vertices: { left: [60], right: [] }, outline: squareRing(),
+        bezier: { anchors: [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8]] } }] };
+    const added = new ShapeSet().loadJSON(doc);
+    assert.strictEqual(added[0].bezier, null, "loadJSON drops the unusable bezier");
+    assert.strictEqual(backfillImported(a, added), 1);
+    assert.strictEqual(added[0].bezier.inHandles.length, added[0].bezier.anchors.length);
+    assert.ok(evalClosedBezier(added[0].bezier).length > 0, "the re-fitted curve samples without crashing");
 });
 
 test("deriveRoiFromLasso: a returned bezier always matches the stored vertices; else it is dropped", () => {
@@ -152,7 +218,7 @@ test("curveFromTrace: recovers a stroke drawn along known uv points", () => {
     const uvPath = [[0.30, 0.50], [0.40, 0.52], [0.50, 0.54], [0.60, 0.56], [0.70, 0.58]];
     const proj = a.projectVerticesInUvBounds({ minu: -Infinity, maxu: Infinity, minv: -Infinity, maxv: Infinity });
     const src = [], dst = [];
-    for (const h of ["left", "right"]) for (let i = 0; i < proj[h].uv.length; i++) { src.push(proj[h].uv[i]); dst.push(proj[h].px[i]); }
+    for (const h of HEMIS) for (let i = 0; i < proj[h].uv.length; i++) { src.push(proj[h].uv[i]); dst.push(proj[h].px[i]); }
     const H = fitHomography(src, dst);
     const pxPath = uvPath.map((uv) => applyHomography(H, uv));
 
@@ -178,7 +244,6 @@ test("labelForCurve: equals nearestVertexTo of the curve's midpoint sample, comp
     const a = adapter();
     const bez = bezierFromAnchors([[0.2, 0.3], [0.4, 0.35], [0.6, 0.4], [0.8, 0.45]], false);
     // independently reproduce the "midpoint sample" rule: sample the open curve, take the middle point
-    const TRACE_SAMPLES = 24;
     const poly = evalOpenBezier(bez, TRACE_SAMPLES);
     const expected = nearestVertexTo(a, poly[poly.length >> 1]);
 
@@ -187,7 +252,7 @@ test("labelForCurve: equals nearestVertexTo of the curve's midpoint sample, comp
 });
 
 test("labelForCurve: a differently-placed (translated) curve gets a DIFFERENT label vertex", () => {
-    // This is the regression test for the stale-label bug: reshaping a sulcus must relabel it.
+    // the label follows the curve: moving/reshaping a sulcus must relabel it, not keep the old vertex
     const a = adapter();
     const bez1 = bezierFromAnchors([[0.2, 0.3], [0.4, 0.35], [0.6, 0.4], [0.8, 0.45]], false);
     const bez2 = bezierFromAnchors([[0.2, 0.6], [0.4, 0.65], [0.6, 0.7], [0.8, 0.75]], false); // shifted in v
@@ -195,6 +260,29 @@ test("labelForCurve: a differently-placed (translated) curve gets a DIFFERENT la
     const lv2 = labelForCurve(a, bez2);
     assert.ok(lv1 && lv2, "both curves should resolve a label vertex");
     assert.notDeepStrictEqual(lv1, lv2, "a reshaped/moved curve must not keep the old label vertex");
+});
+
+test("curveFromTrace: a stroke point with no uv image (on the vanishing line) is dropped, not clamped", () => {
+    // a genuinely projective uv -> px map: px = [u, v] / (0.5 u + 1). Its inverse has w = 1 - 0.5 x,
+    // so every px point with x = 2 lies on the vanishing line and has no uv image.
+    const Hproj = [1, 0, 0, 0, 1, 0, 0.5, 0, 1];
+    const uv = [], px = [], idx = [];
+    for (let i = 0; i <= 10; i++) for (let j = 0; j <= 10; j++) {
+        uv.push([i / 10, j / 10]); px.push(applyHomography(Hproj, [i / 10, j / 10])); idx.push(i * 11 + j);
+    }
+    const stub = {
+        projectVerticesInUvBounds: () => ({ left: { uv, px }, right: { uv: [], px: [] } }),
+        allVertexUV: () => ({ left: { idx, uv }, right: { idx: [], uv: [] } }),
+    };
+    const stroke = [[0.1, 0.1], [0.3, 0.2], [2, 0.5], [0.5, 0.3]];
+    const out = curveFromTrace(stub, stroke);
+    assert.ok(out && out.bezier, "the remaining points still make a curve");
+    for (const p of [...out.bezier.anchors, ...out.bezier.inHandles, ...out.bezier.outHandles])
+        assert.ok(Math.abs(p[0]) < 10 && Math.abs(p[1]) < 10, "no clamped far-away point reached the curve: " + p);
+    // the endpoints are the uv images of the stroke's first and last points
+    const first = out.bezier.anchors[0], last = out.bezier.anchors.at(-1);
+    assert.ok(Math.hypot(first[0] - 0.1 / 0.95, first[1] - 0.1 / 0.95) < 1e-6, "first anchor " + first);
+    assert.ok(Math.hypot(last[0] - 0.5 / 0.75, last[1] - 0.3 / 0.75) < 1e-6, "last anchor " + last);
 });
 
 test("curveFromTrace: null when the homography cannot be fit", () => {

@@ -11,7 +11,11 @@
     "test": "npm run lint && npm run test:js && npm run test:py",
     "pretest:js": "npm run build",
     "test:js": "node --test test/*.test.js",
+    "pretest:py": "npm run build",
     "test:py": "python3 -m unittest discover -s test -p 'test_*.py'"
+  },
+  "engines": {
+    "node": ">=20.19"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

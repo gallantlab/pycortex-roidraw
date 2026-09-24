@@ -7,21 +7,12 @@
  * Committed ROIs are NOT drawn here (the adapter renders them into the surface); this only
  * shows the in-progress lasso, and drawing happens at full-flat so it never needs reprojection.
  */
-import { polygonBounds } from "../core/geom.js";
 import { TOOL, asTool } from "../core/draw-mode.js";
 import { CanvasOverlay } from "./overlay-canvas.js";
+import { isUsableStroke } from "./overlay-geom.js";
 
-const DRAG_THRESHOLD = 4;       // px; distinguishes a click from a drag (Shift-inspect, and a stray
-                                // click that would otherwise become a degenerate shape)
 const LASSO_STROKE = "#ffcc00"; // in-progress lasso outline color
 const LASSO_WIDTH = 1.5;
-const SETTLE_MS = 800;          // the host canvas can settle slightly after load; re-measure once then
-
-/* Diagonal of the stroke's bounding box, in px. 0 for a stroke that never left its start point. */
-function bboxDiagonal(pts) {
-    const b = polygonBounds(pts);
-    return Math.hypot(b.maxx - b.minx, b.maxy - b.miny);
-}
 
 export class LassoOverlay extends CanvasOverlay {
     constructor(adapter, { onLasso, onInspect, onTrace } = {}) {
@@ -31,25 +22,10 @@ export class LassoOverlay extends CanvasOverlay {
         this.onInspect = onInspect || (() => {});
         this.active = false;
         this.passthrough = false;   // Shift held -> drag pans the surface, click inspects a voxel
-        this.drawing = false;
         this.tool = TOOL.LASSO;     // TOOL.LASSO (closed ROI) | TOOL.TRACE (open sulcus)
         this.lasso = [];
-        this._gesture = "none";     // "lasso" | "shift" — fixed at mousedown
-        this._downPt = null;
-        this._panLast = null;
-        this._moved = false;
-
-        const el = this.el;
-        el.addEventListener("mousedown", (e) => this._onDown(e));
-        el.addEventListener("mousemove", (e) => this._onMove(e));
-        el.addEventListener("mouseup", (e) => this._onUp(e));
-        el.addEventListener("mouseleave", (e) => { if (this._gesture !== "none") this._onUp(e); });
-        el.addEventListener("wheel", (e) => this._onWheel(e), { passive: false });
-
+        this._gesture = "none";     // "lasso" | "shift" — fixed at pointerdown
         this.syncRect();
-        // tracked so destroy() can cancel it: autoAttach destroys-then-attaches, and an orphaned
-        // re-measure would touch a removed canvas.
-        this._settleTimer = setTimeout(() => { this._settleTimer = 0; this.syncRect(); }, SETTLE_MS);
     }
 
     syncRect() {
@@ -58,11 +34,10 @@ export class LassoOverlay extends CanvasOverlay {
     }
 
     setActive(on) {
+        if (on === this.active) return;
         this.active = on;
         this.passthrough = false;
-        this._gesture = "none";
-        this.el.style.pointerEvents = on ? "auto" : "none";
-        if (on) this.syncRect(); else this._cancel();
+        if (on) this.syncRect(); else this.cancel();
         this._applyMode();
     }
 
@@ -79,88 +54,76 @@ export class LassoOverlay extends CanvasOverlay {
         const t = asTool(tool);
         if (t === this.tool) return;
         this.tool = t;
-        this._cancel();            // an in-flight stroke belongs to the old tool
+        this.cancel();             // an in-flight stroke belongs to the old tool
     }
 
+    /* Drop any in-flight gesture without emitting anything. */
+    cancel() {
+        this._releasePointer();
+        this._gesture = "none";
+        this._panEnd();
+        this.lasso = [];
+        this._redraw();
+        this._applyMode();
+    }
+
+    // Mode classes (roidraw.css) carry the tint, outline, pointer-events, and cursor.
     _applyMode() {
+        if (!this.el) return;
         const nav = this.active && this.passthrough;   // Shift: pan/inspect mode
         this.el.classList.toggle("roidraw-overlay--active", this.active && !nav);
         this.el.classList.toggle("roidraw-overlay--inspect", nav);
-        this.el.style.cursor = nav ? "grab" : (this.active ? "crosshair" : "default");
+        this._setCursor(nav ? "grab" : (this.active ? "draw" : null));
     }
 
-    _onDown(e) {
-        if (!this.active) return;
-        e.preventDefault();
-        this._downPt = this._evtPt(e);
+    _wantsInput() { return this.active; }
+
+    _pointerDown(e, pt) {
         if (this.passthrough) {                 // Shift: becomes a pan (if dragged) or inspect (if clicked)
             this._gesture = "shift";
-            this._panLast = this._downPt;
-            this._moved = false;
+            this._panStart(pt);
         } else {
             this._gesture = "lasso";
-            this.drawing = true;
-            this.lasso = [this._downPt];
+            this.lasso = [pt];
         }
+        return true;
     }
 
-    _onMove(e) {
-        if (this._gesture === "shift") {
-            const p = this._evtPt(e);
-            if (!this._moved &&
-                (Math.abs(p[0] - this._downPt[0]) > DRAG_THRESHOLD || Math.abs(p[1] - this._downPt[1]) > DRAG_THRESHOLD)) {
-                this._moved = true;
-                this.el.style.cursor = "grabbing";
-            }
-            if (this._moved) {                  // it's a drag -> pan
-                this.adapter.pan(p[0] - this._panLast[0], p[1] - this._panLast[1]);
-                this._panLast = p;
-            }
-            return;
-        }
+    _pointerMove(e, pt) {
+        if (this._gesture === "shift") { this._panMove(pt); return; }
         if (this._gesture !== "lasso") return;
         e.preventDefault();
-        this.lasso.push(this._evtPt(e));
+        this.lasso.push(pt);
         this._redraw();
     }
 
-    _onUp(e) {
+    _pointerUp(e, pt) {
         const g = this._gesture;
         this._gesture = "none";
         if (g === "shift") {
-            if (!this._moved) { const p = this._evtPt(e); this.onInspect(p[0], p[1]); }   // a click -> inspect
-            this._applyMode();                  // restore grab cursor (from grabbing)
+            if (this._panEnd()) this.onInspect(pt[0], pt[1]);   // a click -> inspect
+            this._applyMode();                                  // restore grab cursor (from grabbing)
             return;
         }
         if (g !== "lasso") return;
-        this.drawing = false;
         const pts = this.lasso;
         this.lasso = [];
         this._redraw();
-        // Both tools reject a degenerate stroke — an accidental click with a few pixels of wobble
-        // still emits several points. Requiring the stroke's bounding-box diagonal to exceed the
-        // same threshold that separates a Shift-click from a Shift-drag means a stray click can
-        // neither mint a near-zero-length sulcus nor run the whole selection pipeline for nothing.
-        // Beyond that, a trace needs only 2 points (a line); a closed lasso needs 3 to bound an area.
+        // A stray click can neither mint a near-zero-length sulcus nor run the whole selection
+        // pipeline for nothing: see isUsableStroke.
         const trace = this.tool === TOOL.TRACE;
-        if (pts.length < (trace ? 2 : 3) || bboxDiagonal(pts) <= DRAG_THRESHOLD) return;
+        if (!isUsableStroke(pts, !trace)) return;
         if (trace) this.onTrace(pts); else this.onLasso(pts);
     }
 
+    _pointerCancel() { this.cancel(); }
+
+    // A zoom mid-stroke would move the surface under the px already captured, distorting the
+    // stroke, so the wheel is swallowed (still preventDefault-ed, so the page doesn't scroll).
     _onWheel(e) {
-        if (!this.active) return;
-        e.preventDefault();
-        this.adapter.zoom(e.deltaY);
+        if (this._gesture === "lasso") { e.preventDefault(); return; }
+        super._onWheel(e);
     }
-
-    _cancel() {
-        this.drawing = false;
-        this._gesture = "none";
-        this.lasso = [];
-        this._redraw();
-    }
-
-    cancel() { this._cancel(); }
 
     _redraw() {
         const ctx = this.ctx;
@@ -176,10 +139,5 @@ export class LassoOverlay extends CanvasOverlay {
             for (let j = 1; j < this.lasso.length; j++) ctx.lineTo(this.lasso[j][0], this.lasso[j][1]);
             ctx.stroke();
         }
-    }
-
-    destroy() {
-        if (this._settleTimer) { clearTimeout(this._settleTimer); this._settleTimer = 0; }
-        super.destroy();
     }
 }

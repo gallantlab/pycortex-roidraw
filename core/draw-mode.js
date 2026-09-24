@@ -3,11 +3,12 @@
  *
  * No DOM, no adapter, no THREE: it owns only the mode and the "reached flat since the last
  * flatten-for-draw" latch, and turns surface/UI events into decisions the controller acts on.
- * Extracted from the controller so the latch — which guards against the flatten glide's own
- * transient non-flat frames bouncing the user out of Draw — is testable in isolation.
+ * Keeping it out of the controller makes the latch — which guards against the flatten glide's own
+ * transient non-flat frames bouncing the user out of Draw — testable in isolation.
  *
  * Decisions returned to the caller:
  *   enterDraw()            -> { flatten }  request a flatten (drawing is flat-only)
+ *   enterDisplay()         -> {}           nothing to do beyond the mode change
  *   noteMix(isFlat)        -> { exit }     true => the user inflated; caller drops to Display
  *   noteEditStart(isFlat)  -> { flatten }  re-flatten if an edit starts while inflated
  *   lassoActive(isFlat, editing) -> bool   capture is live only in Draw + flat + not editing

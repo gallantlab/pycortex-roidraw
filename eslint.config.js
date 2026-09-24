@@ -1,7 +1,8 @@
 // ESLint flat config — the repo's JS style gate (`npm run lint`, run first by `npm test` and CI).
 // Rules: eslint's `recommended` set, plus the handful below that encode this codebase's own
 // conventions (4-space indent, double quotes, semicolons, no `var`). Source files are browser ES
-// modules; tests and build.mjs run under node.
+// modules and see browser globals only; tests and the build/lint scripts run under node and see
+// node globals only.
 import js from "@eslint/js";
 import globals from "globals";
 
@@ -13,7 +14,6 @@ export default [
         languageOptions: {
             ecmaVersion: 2022,
             sourceType: "module",
-            globals: { ...globals.browser, ...globals.node },
         },
         rules: {
             // Blocks step by 4. Continuation lines of a wrapped call/array/object/parameter list
@@ -32,5 +32,13 @@ export default [
             // `_x` names mark deliberately-unused parameters (the adapter contract's stubs).
             "no-unused-vars": ["error", { argsIgnorePattern: "^_", caughtErrors: "none" }],
         },
+    },
+    {
+        files: ["core/**/*.js", "ui/**/*.js", "adapter/**/*.js", "index.js", "draw-pipeline.js", "io.js"],
+        languageOptions: { globals: globals.browser },
+    },
+    {
+        files: ["test/**/*.js", "build.mjs", "eslint.config.js"],
+        languageOptions: { globals: globals.node },
     },
 ];

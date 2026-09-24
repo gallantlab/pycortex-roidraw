@@ -9,11 +9,11 @@ test("ShapeSet: add assigns id + palette color; remove; clear", () => {
     assert.strictEqual(a.id, 1);
     assert.ok(/^#/.test(a.color));        // auto from palette
     assert.strictEqual(b.color, "#fff");  // explicit kept
-    assert.strictEqual(s.length, 2);
+    assert.strictEqual(s.shapes.length, 2);
     s.remove(a.id);
     assert.deepStrictEqual(s.shapes.map((r) => r.name), ["V2"]);
     s.clear();
-    assert.strictEqual(s.length, 0);
+    assert.strictEqual(s.shapes.length, 0);
 });
 
 test("toJSON/loadJSON round-trips vertices + outline + labelVert", () => {
@@ -38,7 +38,7 @@ test("toJSON/loadJSON round-trips vertices + outline + labelVert", () => {
 
 test("loadJSON: leaves labelVert null when missing (the viewer back-fills it from geometry)", () => {
     // loadJSON is purely structural — it never invents a label vertex (no coordinates here).
-    // The controller fills a missing label via draw-pipeline.backfillLabel using the adapter's uv.
+    // The controller fills a missing label via draw-pipeline.backfillImported using the adapter's uv.
     const s = new ShapeSet();
     const [roi] = s.loadJSON({
         format: FORMAT,
@@ -111,7 +111,7 @@ test("byKind: partitions the collection", () => {
     s.add({ kind: "sulcus", name: "CS", bezier: {} });   // duplicate names are legal
     assert.strictEqual(s.byKind("roi").length, 1);
     assert.strictEqual(s.byKind("sulcus").length, 2);
-    assert.strictEqual(s.length, 3);
+    assert.strictEqual(s.shapes.length, 3);
 });
 
 test("ids stay unique across kinds", () => {
@@ -193,7 +193,11 @@ test("loadJSON: a v1 bezier (no `closed`, no `smooth`) keeps its absent keys for
 });
 
 test("loadJSON: a garbage bezier field becomes null rather than a half-copied object", () => {
-    for (const bad of [42, "nope", {}, { anchors: "no" }, []]) {
+    for (const bad of [42, "nope", {}, { anchors: "no" }, [],
+        { anchors: [[0, 0], [1, 0], [0, 1]] },                                             // no handles
+        { anchors: [[0, 0], [1, 0], [0, 1]], inHandles: [[0, 0], [1, 0], [0, 1]] },        // no outHandles
+        { anchors: [[0, 0], [1, 0], [0, 1]], inHandles: [[0, 0]], outHandles: [[0, 0], [1, 0], [0, 1]] },
+        { anchors: [[0, 0], [1, 0]], inHandles: [[0, 0], [1, 0]], outHandles: [[0, 0], [1, 0], [0, 1]] }]) {
         const doc = { format: FORMAT, rois: [{ name: "V1", vertices: { left: [], right: [] }, bezier: bad }] };
         const [roi] = new ShapeSet().loadJSON(doc);
         assert.strictEqual(roi.bezier, null, "unusable bezier: " + JSON.stringify(bad));
@@ -218,4 +222,39 @@ test("defaultName: numbers per kind, and the import fallback uses the same rule"
     const [r] = s.loadJSON({ format: FORMAT, rois: [{ vertices: { left: [1], right: [] } }] });
     assert.equal(r.name, "roi1");
     assert.equal(s.defaultName("roi"), "roi2");
+});
+
+test("defaultName: never reuses a name still in use after a delete", () => {
+    const s = new ShapeSet();
+    const s1 = s.add({ kind: "sulcus", name: s.defaultName("sulcus"), bezier: {} });
+    s.add({ kind: "sulcus", name: s.defaultName("sulcus"), bezier: {} });
+    s.remove(s1.id);
+    assert.equal(s.defaultName("sulcus"), "sulcus3", "sulcus2 is still taken");
+    // the search starts at count+1, so a free count+1 is used even when a higher number is taken
+    const t = new ShapeSet();
+    const r1 = t.add({ kind: "roi", name: "roi1" });
+    t.add({ kind: "roi", name: "roi3" });
+    t.remove(r1.id);
+    assert.equal(t.defaultName("roi"), "roi2");
+    // names of the OTHER kind count as taken, too (a user may name an ROI "sulcus1")
+    const u = new ShapeSet();
+    u.add({ kind: "roi", name: "sulcus1" });
+    assert.equal(u.defaultName("sulcus"), "sulcus2");
+    // the import fallback steps past taken names the same way
+    const v = new ShapeSet();
+    v.add({ kind: "roi", name: "roi1" }); v.add({ kind: "roi", name: "roi2" });
+    v.remove(1);
+    const [imp] = v.loadJSON({ format: FORMAT, rois: [{ vertices: { left: [], right: [] } }] });
+    assert.equal(imp.name, "roi3");
+});
+
+test("get: returns the shape with that id, or undefined", () => {
+    const s = new ShapeSet();
+    const a = s.add({ name: "V1" });
+    const b = s.add({ kind: "sulcus", name: "CS", bezier: {} });
+    assert.strictEqual(s.get(a.id), a);
+    assert.strictEqual(s.get(b.id), b);
+    assert.strictEqual(s.get(999), undefined);
+    s.remove(a.id);
+    assert.strictEqual(s.get(a.id), undefined);
 });

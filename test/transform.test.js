@@ -60,9 +60,19 @@ test("invertHomography: singular matrix returns null", () => {
     assert.strictEqual(invertHomography([1, 1, 1, 2, 2, 2, 3, 3, 3]), null);
 });
 
-test("applyHomography: a point on the vanishing line yields a finite result (no NaN/Infinity)", () => {
+test("applyHomography: a point on the vanishing line has no image (null, never NaN/Infinity)", () => {
     // H with the vanishing line h6*x + h7*y + 1 = 0; choose a point exactly on it.
     const H = [1, 0, 0, 0, 1, 0, 1, 0, 1];   // w = x + 1  -> zero at x = -1
-    const out = applyHomography(H, [-1, 0.5]);
-    assert.ok(isFinite(out[0]) && isFinite(out[1]), `got non-finite ${out}`);
+    assert.strictEqual(applyHomography(H, [-1, 0.5]), null);
+    assert.strictEqual(applyHomography(H, [-1 + 1e-14, 0.5]), null);   // |w| below the epsilon
+    assert.strictEqual(applyHomography(H, [NaN, 0.5]), null);          // non-finite divisor
+    const off = applyHomography(H, [1, 0.5]);                          // w = 2: an ordinary point
+    assert.deepStrictEqual(off, [0.5, 0.25]);
+});
+
+test("fitHomography: null when src and dst differ in length (the pairing is ambiguous)", () => {
+    const src = [[0, 0], [1, 0], [1, 1], [0, 1], [0.5, 0.5]];
+    assert.strictEqual(fitHomography(src, src.slice(0, 4)), null);
+    assert.strictEqual(fitHomography(src.slice(0, 4), src), null);
+    assert.ok(fitHomography(src, src), "sanity: equal lengths still fit");
 });

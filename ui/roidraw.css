@@ -1,17 +1,27 @@
-/* roidraw UI. Everything visual lives here; the JS only sets what must be computed at runtime
- * (overlay position/size, cursor, show/hide). */
+/* roidraw UI styles: the panel, the mode bar, and the overlay canvases' mode tints, outlines,
+ * pointer-events, and cursors. The strokes painted INTO the overlay canvases (lasso, curve,
+ * knots) take their colors from constants in lasso-overlay.js and bezier-edit-overlay.js. The JS
+ * sets inline only what must be computed at runtime (overlay position/size, mode-bar position,
+ * show/hide). */
 
 .roidraw-overlay {
     position: fixed;
     left: 0;
     top: 0;
-    pointer-events: none;          /* only captures in draw mode (.roidraw-overlay--active) */
+    pointer-events: none;          /* captures only in one of the mode states below */
+    touch-action: none;            /* a touch/pen drag draws or pans; the browser must not scroll */
+    user-select: none;
     z-index: 9998;
     outline-offset: -2px;
 }
-.roidraw-overlay--active { cursor: crosshair; background: rgba(255, 204, 0, 0.05); outline: 2px dashed rgba(255, 204, 0, 0.8); }
-.roidraw-overlay--inspect { cursor: cell;  background: rgba(80, 160, 255, 0.06); outline: 2px dashed rgba(80, 160, 255, 0.85); }
-.roidraw-edit-overlay--active { outline: 2px dashed rgba(57, 208, 255, 0.85); }
+/* Mode states: draw (lasso/trace), inspect (Shift: pan/inspect), edit (a shape's bezier). */
+.roidraw-overlay--active { pointer-events: auto; background: rgba(255, 204, 0, 0.05); outline: 2px dashed rgba(255, 204, 0, 0.8); }
+.roidraw-overlay--inspect { pointer-events: auto; background: rgba(80, 160, 255, 0.06); outline: 2px dashed rgba(80, 160, 255, 0.85); }
+.roidraw-edit-overlay--active { pointer-events: auto; outline: 2px dashed rgba(57, 208, 255, 0.85); }
+/* Cursor states: CanvasOverlay sets at most one of these at a time. */
+.roidraw-overlay--draw { cursor: crosshair; }
+.roidraw-overlay--grab { cursor: grab; }
+.roidraw-overlay--grabbing { cursor: grabbing; }
 
 .roidraw-panel {
     position: fixed;
@@ -27,7 +37,6 @@
     border-radius: 6px;
 }
 .roidraw-panel h2 { font-size: 12px; font-weight: 700; margin: 0 0 6px; }
-.roidraw-panel button { width: 100%; margin-bottom: 6px; }
 .roidraw-panel input[type="file"] { width: 100%; }
 .roidraw-panel label { display: block; margin-bottom: 4px; }
 
@@ -36,19 +45,18 @@
 .roidraw-status--draw  { color: #ffcc00; }
 
 .roidraw-tools { display: flex; gap: 0; margin: 6px 0 8px; }
-/* `.roidraw-panel button` is (0,1,1); a bare `.roidraw-tools__btn` is (0,1,0) and loses to it, so
- * the width/margin resets below must be scoped under .roidraw-panel to actually take effect. */
-.roidraw-panel .roidraw-tools__btn {
+.roidraw-tools__btn {
     flex: 1;
-    width: auto;                   /* override .roidraw-panel button { width: 100% } */
-    margin: 0;                     /* override .roidraw-panel button { margin-bottom: 6px } */
+    margin: 0;
     padding: 5px 8px; font: inherit; cursor: pointer;
     background: #2a2a2a; color: #ddd; border: 1px solid #444;
 }
-/* All scoped under .roidraw-panel too: a bare selector here would lose to the base rule above. */
-.roidraw-panel .roidraw-tools__btn:first-child { border-radius: 3px 0 0 3px; }
-.roidraw-panel .roidraw-tools__btn:last-child { border-radius: 0 3px 3px 0; border-left: none; }
-.roidraw-panel .roidraw-tools__btn--on { background: #ffcc00; color: #111; border-color: #ffcc00; }
+.roidraw-tools__btn:first-child { border-radius: 3px 0 0 3px; }
+.roidraw-tools__btn:last-child { border-radius: 0 3px 3px 0; border-left: none; }
+.roidraw-tools__btn--on { background: #ffcc00; color: #111; border-color: #ffcc00; }
+
+/* a full-width panel action (Export, Clear, Done editing) */
+.roidraw-action { width: 100%; margin-bottom: 6px; }
 
 .roidraw-list { margin-bottom: 6px; }
 .roidraw-list__empty { color: #777; }
@@ -58,7 +66,6 @@
 .roidraw-roi__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .roidraw-roi__count { color: #999; }
 .roidraw-roi__editbtn {
-    width: auto;                   /* override .roidraw-panel button { width: 100% } */
     margin: 0;
     padding: 3px 9px;
     font-size: 11px;
@@ -72,7 +79,7 @@
 .roidraw-roi__editbtn--on { background: #1e9fd0; border-color: #4cc6f0; color: #04222e; font-weight: 700; }
 .roidraw-roi__editbtn:disabled { opacity: 0.4; cursor: default; }
 /* a bare ✕ glyph: strip the default <button> chrome (background/border/padding) so only the × shows */
-.roidraw-roi__del { color: #f77; background: none; border: none; padding: 0; font: inherit; line-height: 1; cursor: pointer; }
+.roidraw-roi__del { color: #f77; background: none; border: none; margin: 0; padding: 0; font: inherit; line-height: 1; cursor: pointer; }
 .roidraw-roi__del:hover { color: #ff9a9a; }
 .roidraw-roi--editing { outline: 1px solid rgba(57, 208, 255, 0.6); border-radius: 3px; }
 
@@ -90,7 +97,10 @@
 
 .roidraw-modebar {
     position: fixed;
-    right: 264px;                  /* refined to sit left of the control panel at runtime */
+    /* Default: just left of the draw panel — its right offset (10px) + outer width (230 + 2×10
+     * padding + 2×1 border = 252px) + a 2px gap. position() moves it beside the host's control
+     * panel at runtime. */
+    right: 264px;
     top: 8px;
     z-index: 10001;
     display: flex;

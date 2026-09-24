@@ -1,62 +1,51 @@
 /*
  * pycortex-adapter.js — ViewerAdapter implementation for the pycortex WebGL viewer.
  *
- * THE ONLY FILE THAT KNOWS PYCORTEX INTERNALS. Everything pycortex-specific and every hard-won
- * gotcha lives here, behind the ViewerAdapter contract:
+ * This file and pycortex-overlay.js (the drawn layer inside the SVG overlay, which this adapter
+ * owns and delegates to) are the only code that knows pycortex internals. Every pycortex-specific
+ * gotcha lives behind the ViewerAdapter contract:
  *   - mriview.get_position() morph + the flatoff[1] mesh y-offset (vertices render at
  *     pivot.matrixWorld * (get_position + [0,-flatoff[1],0]); omitting it floats overlays off
  *     the inflated surface).
  *   - full pivot-chain updateMatrixWorld(true) (setMix drives ancestor transforms; updating only
  *     pivots.back reads a stale parent).
- *   - SVG overlay paths in the *viewBox* coordinate system (init sets viewBox to the original svg
- *     size; setHeight later overwrites width/height to the render size).
- *   - Labels data-ptidx convention: left = subjectIdx, right = leftVertexCount + subjectIdx.
  *   - svgo.update() rasterizes asynchronously; the surface fires "update" when the texture is
  *     swapped in (repaint then), and surfmix === the mix slider value.
  *   - dat.GUI control panel (gui.__folders) + LandscapeControls (setTarget/setRadius) + viewer.animate.
+ * The overlay-layer conventions (viewBox coords, data-ptidx labels) are listed in pycortex-overlay.js.
  */
 import { ViewerAdapter } from "./viewer-adapter.js";
-import { chaikin, ndcToPixel } from "../core/geom.js";
-import { isClosed, segCount, segControls, hasCurve } from "../core/bezier.js";
-import { exportSulciSvg, SULCI_STROKE_WIDTH, SULCI_STROKE_OPACITY } from "../core/svg-export.js";
+import { PycortexOverlay } from "./pycortex-overlay.js";
+import { ndcToPixel } from "../core/geom.js";
+import { HEMIS } from "../core/hemis.js";
 import { TimerSet } from "../core/timer-set.js";
-
-const SVGNS = "http://www.w3.org/2000/svg";
-const HEMIS = ["left", "right"];
 
 // Tunable pycortex-specific constants (kept here, in the host adapter, where they belong).
 const FLAT_THRESHOLD = 0.999;     // surfmix at/above this counts as "fully flat" (drawing-enabled)
 const DEFAULT_FILL = 0.70;        // measureFrame: fraction of the viewport the brain should fill
 const FRAME_TARGET_SAMPLES = 250; // measureFrame: ~vertices/hemi to KEEP for COM + extent (a target count, NOT a stride — contrast projectVertices' `subsample`)
+const MIN_MEASURABLE_FILL = 0.01; // measureFrame: below this on-screen extent, keep the current radius
 const ZOOM_SENSITIVITY = 0.001;   // wheel deltaY -> radius factor exp(deltaY * this)
 const DEFAULT_FOV_DEG = 35;       // fallback if the camera has no .fov
-const OVERLAY_RETRY_MAX = 40;     // applyHostDefaults: tries waiting for the async SVG overlay
-const OVERLAY_RETRY_MS = 250;     // ...interval between those tries
+const DEFAULT_ANIM_SPEED = 0.6;   // transition duration (s) when viewopts.anim_speed is unset
+// The host's SVG overlay loads asynchronously after the viewer: anything that needs it (the
+// built-in layer defaults here, the controller's layer sync) retries on this one schedule.
+const OVERLAY_RETRY_TRIES = 40;
+const OVERLAY_RETRY_MS = 250;
 const COLLAPSE_SCHEDULE_MS = [400, 1200, 2500, 4500]; // re-collapse the late "data layers" folder
 const COLLAPSE_WINDOW_MS = 8000;  // ...and on setData within this startup window only
 const DEFAULT_THICKMIX = 0.5;     // thick-surface blend fed to get_position (constant; we don't expose it)
-const FALLBACK_TEX_W = 1024;      // overlay viewBox width fallback when the surface reports no size
-const FALLBACK_TEX_H = 768;       // overlay viewBox height fallback
-const OUTLINE_STROKE_PX = 3;      // ROI colored-outline stroke width, in overlay viewBox px
-const OUTLINE_HALO_PX = 2;        // extra width of the white halo drawn under the colored stroke
-const OUTLINE_FALLBACK_COLOR = "#ffffff"; // stroke when an ROI has no (valid) color
-const LABEL_FONT_PT = 14;         // ROI label font size, in pt
-// The live overlay strokes a sulcus exactly as the exported markup does. Both read the same two
-// constants (from pycortex's defaults.cfg [sulci_paths]) so they cannot drift apart.
-const CURVE_STROKE_PX = SULCI_STROKE_WIDTH;
-const CURVE_STROKE_OPACITY = SULCI_STROKE_OPACITY;
-
-// A CSS hex color (#rgb / #rrggbb / #rrggbbaa) or the fallback. ROI colors are our own palette, but an
-// imported file could carry anything, and the value goes into an SVG style attribute — restrict it to
-// a hex literal so it can't smuggle in extra style declarations.
-function safeColor(c) {
-    return (typeof c === "string" && /^#[0-9a-fA-F]{3,8}$/.test(c)) ? c : OUTLINE_FALLBACK_COLOR;
-}
 
 // Vertex count of a THREE BufferAttribute (pycortex's old three.js lacks `.count`).
 function attrCount(attr) {
     if (attr.count !== undefined && !isNaN(attr.count)) return attr.count;
     return attr.array.length / attr.itemSize;
+}
+
+// Whether `root` is an ancestor of `obj` in the THREE scene graph.
+function isDescendant(obj, root) {
+    for (let o = obj && obj.parent; o; o = o.parent) if (o === root) return true;
+    return false;
 }
 
 // viewer.surfs[i] is a SurfDelegate; the real Surface (pivots/picker/hemis/svg) is at .surf.
@@ -73,6 +62,26 @@ export function findSurface(viewer) {
 }
 
 /*
+ * What a located Surface still lacks for the adapter to work: [] once its pivots and both hemis'
+ * position + uv geometry are built. Projection + selection iterate BOTH hemis and read each one's
+ * position AND uv geometry, so every one is checked here instead of failing silently later.
+ * Shared by preflightHost (the attach-time error) and surfaceReady (autoAttach's poll), so the
+ * poll never attaches to a surface the constructor would then reject.
+ */
+export function surfaceProblems(surface) {
+    const missing = [];
+    if (!surface.pivots) missing.push("surface.pivots (morph transform chain)");
+    const h = surface.hemis || {};
+    for (const side of HEMIS) {
+        const hemi = h[side];
+        if (!hemi || !hemi.attributes) { missing.push(`surface.hemis.${side} (hemisphere geometry)`); continue; }
+        if (!hemi.attributes.position) missing.push(`surface.hemis.${side}.attributes.position (vertex geometry)`);
+        if (!hemi.attributes.uv) missing.push(`surface.hemis.${side}.attributes.uv (flat-UV coords)`);
+    }
+    return missing;
+}
+
+/*
  * Inspect the host for the core pycortex internals the adapter depends on. Returns { ok, missing:[…] }
  * naming each absent capability, so attach() can fail LOUDLY and specifically when pycortex drifts
  * (a renamed get_position, a restructured surface) instead of misbehaving silently. Pure — takes
@@ -85,33 +94,20 @@ export function preflightHost({ THREE, mriview, svgoverlay, viewer } = {}) {
     else if (typeof mriview.get_position !== "function") missing.push("mriview.get_position() (vertex morph)");
     const surface = findSurface(viewer);
     if (!surface) missing.push("Surface (viewer.surfs[].surf with .pivots)");
-    else {
-        if (!surface.pivots) missing.push("surface.pivots (morph transform chain)");
-        // Projection + selection iterate BOTH hemis and read each one's position AND uv geometry
-        // (allVertexUV/vertexUV/projectVerticesInUvBounds dereference attributes.uv.array). Check
-        // every one so the uv path fails loudly here instead of silently `continue`-ing later.
-        const h = surface.hemis || {};
-        for (const side of ["left", "right"]) {
-            const hemi = h[side];
-            if (!hemi || !hemi.attributes) { missing.push(`surface.hemis.${side} (hemisphere geometry)`); continue; }
-            if (!hemi.attributes.position) missing.push(`surface.hemis.${side}.attributes.position (vertex geometry)`);
-            if (!hemi.attributes.uv) missing.push(`surface.hemis.${side}.attributes.uv (flat-UV coords)`);
-        }
-    }
+    else missing.push(...surfaceProblems(surface));
     if (!svgoverlay) missing.push("svgoverlay (global, ROI overlay rendering)");
     return { ok: missing.length === 0, missing };
 }
 
-// True once the surface's geometry + pivots are built (projection + arming work). The viewer
-// creates `viewer` and decodes the CTM asynchronously, so callers poll this before attaching.
+// True once the surface's geometry + pivots are built (the same checks the constructor makes).
+// The viewer creates `viewer` and decodes the CTM asynchronously, so callers poll this first.
 export function surfaceReady(viewer) {
     const s = findSurface(viewer);
-    return !!(s && s.pivots && s.hemis && s.hemis.left &&
-              s.hemis.left.attributes && s.hemis.left.attributes.position);
+    return !!s && surfaceProblems(s).length === 0;
 }
 
 export class PycortexAdapter extends ViewerAdapter {
-    constructor(viewer, { animSpeedFallback = 0.6 } = {}) {
+    constructor(viewer, { animSpeedFallback = DEFAULT_ANIM_SPEED } = {}) {
         super();
         this.THREE = globalThis.THREE;
         this.mriview = globalThis.mriview;
@@ -127,11 +123,8 @@ export class PycortexAdapter extends ViewerAdapter {
 
         this._animSpeedFallback = animSpeedFallback;
         this._v = new this.THREE.Vector3();
-        this._thickmix = DEFAULT_THICKMIX;
-        this._drawn = null;          // { layerEl, labels } for the current overlay layer
-        this._layerHidden = false;
-        this._labelsHidden = false;
-        this._uiFolderAdded = false;
+        this._mixWarned = false;
+        this._overlay = new PycortexOverlay(this, { thickmix: DEFAULT_THICKMIX });
         this._timers = new TimerSet();   // every poll/deferred teardown; destroy() cancels them
         this._onSetData = null;          // host listener installed by applyHostDefaults()
     }
@@ -139,11 +132,9 @@ export class PycortexAdapter extends ViewerAdapter {
     // --- surface identity -------------------------------------------------------------
 
     surfaceId() {
-        try {
-            const d = this.viewer.active && this.viewer.active.data && this.viewer.active.data[0];
-            if (d && d.subject) return d.subject;
-        } catch (e) { console.debug("[roidraw] surfaceId lookup failed, using 'unknown':", e); }
-        return "unknown";
+        const a = this.viewer.active;
+        const d = a && a.data && a.data[0];
+        return (d && d.subject) || "unknown";
     }
 
     isFlat() { return this._currentMix() >= FLAT_THRESHOLD; }
@@ -159,6 +150,9 @@ export class PycortexAdapter extends ViewerAdapter {
         if (c instanceof HTMLCanvasElement) return c;
         return this.viewer.renderer && this.viewer.renderer.domElement;
     }
+
+    /* Geometry-local vertex count of one hemisphere (not part of the contract). */
+    vertexCount(h) { return attrCount(this.posdata[h].positions[0]); }
 
     // --- projection -------------------------------------------------------------------
 
@@ -178,44 +172,64 @@ export class PycortexAdapter extends ViewerAdapter {
 
     _flatOffY() { return (this.surface.flatoff && this.surface.flatoff[1]) || 0; }
 
-    // Refresh the WHOLE pivot chain so back.matrixWorld reflects the current mix, then return
-    // {cam, surfmix, foy, W, H}. setMix drives ancestor transforms (pivots.front via setPivot,
-    // back.rotation.x), so updating only `back` would read a stale parent.
+    // Refresh the WHOLE pivot chain so each pivots[h].back.matrixWorld reflects the current mix,
+    // then return the projection context {cam, surfmix, foy, W, H}. setMix drives ancestor
+    // transforms (pivots.front via setPivot, back.rotation.x), so updating only `back` would read
+    // a stale parent. A forced update of viewer.root reaches every pivot beneath it; a pivot that
+    // is not under root (or a viewer without one) is updated on its own.
     _prepProjection() {
         const cam = this.viewer.camera;
         cam.updateMatrixWorld();
-        if (this.viewer.root && this.viewer.root.updateMatrixWorld) this.viewer.root.updateMatrixWorld(true);
+        const root = this.viewer.root;
+        const rootUpdated = !!(root && root.updateMatrixWorld);
+        if (rootUpdated) root.updateMatrixWorld(true);
+        for (const h of HEMIS) {
+            const pivot = this.surface.pivots[h].back;
+            if (!rootUpdated || !isDescendant(pivot, root)) pivot.updateMatrixWorld(true);
+        }
         const r = this.canvas().getBoundingClientRect();
         return { cam, surfmix: this._currentMix(), foy: this._flatOffY(), W: r.width, H: r.height };
+    }
+
+    // One hemisphere's projection inputs: posdata, pivot world matrix, vertex count, flat-UV array.
+    _hemiFrame(h) {
+        const pd = this.posdata[h];
+        return {
+            pd, mw: this.surface.pivots[h].back.matrixWorld, n: attrCount(pd.positions[0]),
+            uv: this.surface.hemis[h].attributes.uv.array,
+        };
     }
 
     // World position of geometry-local vertex `i` at the current mix (incl. the flatoff offset
     // so it lands on the *rendered* mesh, not floating above it). Mutates+returns this._v.
     // Applies the flatoff offset to our OWN vector (never to get_position's returned `pos`, which
     // may be a shared/cached vector inside mriview — mutating it would corrupt host state).
-    _worldOf(pd, mw, i, surfmix, foy) {
-        const gp = this.mriview.get_position(pd, surfmix, this._thickmix, i).pos;
+    _worldOf(frame, i, ctx) {
+        const gp = this.mriview.get_position(frame.pd, ctx.surfmix, DEFAULT_THICKMIX, i).pos;
         this._v.copy(gp);
-        this._v.y -= foy;
-        return this._v.applyMatrix4(mw);
+        this._v.y -= ctx.foy;
+        return this._v.applyMatrix4(frame.mw);
+    }
+
+    // Project a world vector (in place) to screen px, or null when it is behind the camera /
+    // outside the frustum.
+    _toScreen(world, ctx) {
+        const p = world.project(ctx.cam);
+        return (p.z < -1 || p.z > 1) ? null : ndcToPixel(p, ctx.W, ctx.H);
     }
 
     projectVertices({ subsample = 1 } = {}) {
-        const { cam, surfmix, foy, W, H } = this._prepProjection();
+        const ctx = this._prepProjection();
         const out = { left: { idx: [], px: [] }, right: { idx: [], px: [] } };
+        const step = Math.max(1, subsample | 0);
         for (const h of HEMIS) {
-            const pivot = this.surface.pivots[h].back;
-            pivot.updateMatrixWorld(true);
-            const mw = pivot.matrixWorld;
-            const pd = this.posdata[h];
+            const f = this._hemiFrame(h);
             const revIdx = this.surface.hemis[h].reverseIndexMap; // geometry-local -> subject
-            const n = attrCount(pd.positions[0]);
-            const step = Math.max(1, subsample | 0);
-            for (let i = 0; i < n; i += step) {
-                const v = this._worldOf(pd, mw, i, surfmix, foy).project(cam);
-                if (v.z < -1 || v.z > 1) continue; // behind camera / outside frustum
+            for (let i = 0; i < f.n; i += step) {
+                const px = this._toScreen(this._worldOf(f, i, ctx), ctx);
+                if (!px) continue;
                 out[h].idx.push(revIdx[i]);
-                out[h].px.push(ndcToPixel(v, W, H));
+                out[h].px.push(px);
             }
         }
         return out;
@@ -227,23 +241,20 @@ export class PycortexAdapter extends ViewerAdapter {
     allVertexUV() {
         const out = { left: { idx: [], uv: [] }, right: { idx: [], uv: [] } };
         for (const h of HEMIS) {
-            const hemi = this.surface.hemis[h];
-            const uvarr = hemi.attributes.uv && hemi.attributes.uv.array;
-            if (!uvarr) continue;
-            const revIdx = hemi.reverseIndexMap;
-            const n = attrCount(this.posdata[h].positions[0]);
-            for (let i = 0; i < n; i++) {
+            const f = this._hemiFrame(h);
+            const revIdx = this.surface.hemis[h].reverseIndexMap;
+            for (let i = 0; i < f.n; i++) {
                 out[h].idx.push(revIdx[i]);
-                out[h].uv.push([uvarr[i * 2], uvarr[i * 2 + 1]]);
+                out[h].uv.push([f.uv[i * 2], f.uv[i * 2 + 1]]);
             }
         }
         return out;
     }
 
-    // Flat-UV of one subject vertex {h,g}, or null if it has no flat coords.
+    // Flat-UV of one subject vertex {h,g}, or null if it has no flat coords (or names no hemi).
     vertexUV(o) {
         const hemi = this.surface.hemis[o.h];
-        if (!hemi || !hemi.attributes.uv) return null;
+        if (!hemi) return null;
         const gi = hemi.indexMap[o.g]; // subject -> geometry-local
         if (gi === undefined) return null;
         const uv = hemi.attributes.uv.array;
@@ -256,23 +267,17 @@ export class PycortexAdapter extends ViewerAdapter {
     // single global homography drifts, but locally (around one ROI) it's near-exact — which is what
     // makes the editable curve trace the baked white outline instead of sitting slightly inside it.
     projectVerticesInUvBounds(b) {
-        const { cam, surfmix, foy, W, H } = this._prepProjection();
+        const ctx = this._prepProjection();
         const out = { left: { uv: [], px: [] }, right: { uv: [], px: [] } };
         for (const h of HEMIS) {
-            const pivot = this.surface.pivots[h].back;
-            pivot.updateMatrixWorld(true);
-            const mw = pivot.matrixWorld;
-            const pd = this.posdata[h];
-            const uvarr = this.surface.hemis[h].attributes.uv && this.surface.hemis[h].attributes.uv.array;
-            if (!uvarr) continue;
-            const n = attrCount(pd.positions[0]);
-            for (let i = 0; i < n; i++) {
-                const u = uvarr[i * 2], v = uvarr[i * 2 + 1];
+            const f = this._hemiFrame(h);
+            for (let i = 0; i < f.n; i++) {
+                const u = f.uv[i * 2], v = f.uv[i * 2 + 1];
                 if (u < b.minu || u > b.maxu || v < b.minv || v > b.maxv) continue;
-                const p = this._worldOf(pd, mw, i, surfmix, foy).project(cam);
-                if (p.z < -1 || p.z > 1) continue;
+                const px = this._toScreen(this._worldOf(f, i, ctx), ctx);
+                if (!px) continue;
                 out[h].uv.push([u, v]);
-                out[h].px.push(ndcToPixel(p, W, H));
+                out[h].px.push(px);
             }
         }
         return out;
@@ -280,38 +285,34 @@ export class PycortexAdapter extends ViewerAdapter {
 
     // --- view framing primitive -------------------------------------------------------
 
-    // Center of mass (world) + the camera radius that fills `fillTarget` of the viewport.
-    // fill is the on-screen NDC extent (canvas-size independent); on-screen size ∝ 1/radius.
-    // (host-only — used by the controller's framing; not part of the portable ViewerAdapter contract.)
+    // Center of mass (world, over every sampled vertex) + the camera radius that fills
+    // `fillTarget` of the viewport (from the in-frustum samples' on-screen extent). fill is the
+    // on-screen NDC extent (canvas-size independent); on-screen size ∝ 1/radius.
     measureFrame(fillTarget = DEFAULT_FILL, targetSamples = FRAME_TARGET_SAMPLES) {
         const ctrl = this.viewer.controls;
         if (!ctrl || typeof ctrl.radius !== "number") return null;
-        const { cam, surfmix, foy, W, H } = this._prepProjection();
+        const ctx = this._prepProjection();
         let sx = 0, sy = 0, sz = 0, count = 0;
-        let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity, seen = false;
+        let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
         for (const h of HEMIS) {
-            const pivot = this.surface.pivots[h].back;
-            pivot.updateMatrixWorld(true);
-            const mw = pivot.matrixWorld, pd = this.posdata[h], n = attrCount(pd.positions[0]);
-            const step = Math.max(1, Math.floor(n / targetSamples));   // targetSamples = COUNT to keep, not a stride
-            for (let i = 0; i < n; i += step) {
-                const w = this._worldOf(pd, mw, i, surfmix, foy);
+            const f = this._hemiFrame(h);
+            const step = Math.max(1, Math.floor(f.n / targetSamples));   // targetSamples = COUNT to keep, not a stride
+            for (let i = 0; i < f.n; i += step) {
+                const w = this._worldOf(f, i, ctx);
                 sx += w.x; sy += w.y; sz += w.z; count++;
-                const nd = w.clone().project(cam);
-                if (nd.z < -1 || nd.z > 1) continue;
-                const px = ndcToPixel(nd, W, H);
+                const px = this._toScreen(w, ctx);   // projects w in place; its world coords are already summed
+                if (!px) continue;
                 if (px[0] < minx) minx = px[0];
                 if (px[0] > maxx) maxx = px[0];
                 if (px[1] < miny) miny = px[1];
                 if (px[1] > maxy) maxy = px[1];
-                seen = true;
             }
         }
         if (!count) return null;
         const out = { com: [sx / count, sy / count, sz / count], radius: ctrl.radius };
-        if (seen && W > 0 && H > 0) {
-            const fill = Math.max((maxx - minx) / W, (maxy - miny) / H);
-            if (fill > 0.01) out.radius = ctrl.radius * (fill / fillTarget);
+        if (minx <= maxx && ctx.W > 0 && ctx.H > 0) {
+            const fill = Math.max((maxx - minx) / ctx.W, (maxy - miny) / ctx.H);
+            if (fill > MIN_MEASURABLE_FILL) out.radius = ctrl.radius * (fill / fillTarget);
         }
         return out;
     }
@@ -374,7 +375,6 @@ export class PycortexAdapter extends ViewerAdapter {
     }
 
     // Smooth state transition using the viewer's own animation (same as its toolbar buttons).
-    // (host-only — used by the controller's framing/flatten; not part of the portable contract.)
     animateCamera({ target, radius, mix }) {
         const sp = this._animSpeed(), anim = [];
         if (target) anim.push({ state: "camera.target", idx: sp, value: [target[0], target[1], target[2]] });
@@ -406,215 +406,13 @@ export class PycortexAdapter extends ViewerAdapter {
         return () => { surf.removeEventListener("mix", handler); surf.removeEventListener("update", repaint); };
     }
 
-    // --- overlay layer (occlusion-correct ROI rendering) ------------------------------
+    // --- overlay layer (occlusion-correct ROI rendering; see pycortex-overlay.js) --------
 
-    /* The overlay's drawing dimensions. Paths live in the viewBox coordinate system, NOT the
-     * (later-overwritten) width/height. Rendering and export must agree on this or the exported
-     * markup would not line up with what the user drew. */
-    _overlayDims(svgo) {
-        const vb = (svgo.svg.getAttribute("viewBox") || "").split(/[\s,]+/).map(parseFloat);
-        return {
-            W: (vb.length === 4 && vb[2]) ? vb[2] : svgo.width,
-            H: (vb.length === 4 && vb[3]) ? vb[3] : svgo.height,
-        };
-    }
+    setOverlayLayer(name, shapes) { return this._overlay.setLayer(name, shapes); }
 
-    setOverlayLayer(name, shapes) {
-        const svgo = this.surface.svg;
-        if (!svgo || !svgo.svg || !svgo.posdata || !svgo.depth) return false; // overlay not loaded yet
-        const doc = svgo.svg.ownerDocument;
-        const { W, H } = this._overlayDims(svgo);
+    setLayerVisible(name, shapes, labels) { this._overlay.setVisible(name, shapes, labels); }
 
-        // tear down the previous layer + its label sprites
-        if (this._drawn) {
-            try {
-                if (this._drawn.labels) {
-                    svgo.labels.left.remove(this._drawn.labels.meshes.left);
-                    svgo.labels.right.remove(this._drawn.labels.meshes.right);
-                }
-                if (this._drawn.layerEl && this._drawn.layerEl.parentNode)
-                    this._drawn.layerEl.parentNode.removeChild(this._drawn.layerEl);
-            } catch (e) {
-                // Best effort: a partially-removed layer still gets replaced below, so keep going —
-                // but say so, since a leaked label sprite would otherwise be an invisible mystery.
-                console.warn("[roidraw] tearing down the previous overlay layer failed:", e);
-            }
-            delete svgo.layers[name];
-            delete svgo[name];
-            this._drawn = null;
-        }
-        if (!shapes.length) { svgo.update(); return true; }
-
-        // <g.display_layer> > (shapes group with white-outline paths) + (labels group with texts)
-        const layerEl = doc.createElementNS(SVGNS, "g");
-        layerEl.setAttribute("id", name);
-        layerEl.setAttribute("class", "display_layer");
-        layerEl.setAttribute("style", "display:" + (this._layerHidden ? "none" : "inline"));
-        const shapesEl = doc.createElementNS(SVGNS, "g");
-        shapesEl.setAttribute("id", name + "_shapes");
-        const labelsEl = doc.createElementNS(SVGNS, "g");
-        labelsEl.setAttribute("id", name + "_labels");
-        layerEl.appendChild(shapesEl);
-        layerEl.appendChild(labelsEl);
-
-        for (const shape of shapes) {
-            const d = this._shapeSvgPath(shape, W, H);
-            if (d) {
-                const sulcus = shape.kind === "sulcus";
-                const w = sulcus ? CURVE_STROKE_PX : OUTLINE_STROKE_PX;
-                const op = sulcus ? CURVE_STROKE_OPACITY : 1;
-                // White halo under a colored stroke: the halo keeps the outline legible on any
-                // background (colored data or white anatomy), while the color carries the shape
-                // identity the panel swatch shows. Same path `d`, drawn wider + white underneath.
-                // This halo is a roidraw rendering choice for the LIVE overlay only, and is NOT
-                // part of the exported markup.
-                const halo = doc.createElementNS(SVGNS, "path");
-                halo.setAttribute("d", d);
-                halo.setAttribute("style", "fill:none;stroke:#ffffff;stroke-width:" + (w + OUTLINE_HALO_PX) + ";stroke-opacity:0.9");
-                shapesEl.appendChild(halo);
-                const path = doc.createElementNS(SVGNS, "path");
-                path.setAttribute("d", d);
-                path.setAttribute("style", "fill:none;stroke:" + safeColor(shape.color) + ";stroke-width:" + w + ";stroke-opacity:" + op);
-                shapesEl.appendChild(path);
-            }
-            const ptidx = this._labelPtidx(shape.labelVert);
-            if (ptidx != null) {
-                const t = doc.createElementNS(SVGNS, "text");
-                t.setAttribute("data-ptidx", String(ptidx));
-                t.setAttribute("style", "font-family:Helvetica, sans-serif;font-size:" + LABEL_FONT_PT + "pt;font-weight:bold;" +
-                    "font-style:italic;fill:white;fill-opacity:1;text-anchor:middle;filter:url(#dropshadow)");
-                t.appendChild(doc.createTextNode(shape.name)); // createTextNode => no injection
-                labelsEl.appendChild(t);
-            }
-        }
-        svgo.svg.appendChild(layerEl);
-
-        // occlusion-aware label sprites, reusing pycortex's own Labels; degrade gracefully
-        let labels;
-        try {
-            labels = new this.svgoverlay.Labels(labelsEl, svgo.posdata, !!this._labelsHidden);
-            labels.shader.uniforms.depth.value = svgo.depth;
-            const w = this.surface.width || this.viewportSize().width || FALLBACK_TEX_W;
-            const h = this.surface.height || this.viewportSize().height || FALLBACK_TEX_H;
-            labels.shader.uniforms.scale.value.set(1 / w, 1 / h);
-            labels.setMix({ mix: this._currentMix(), thickmix: this._thickmix });
-            svgo.labels.left.add(labels.meshes.left);
-            svgo.labels.right.add(labels.meshes.right);
-        } catch (e) {
-            console.warn("[roidraw] ROI labels failed (outlines still drawn):", e);
-            labels = null;
-        }
-
-        const stub = { meshes: { left: { visible: false }, right: { visible: false } }, setMix() {}, showhide() {} };
-        svgo.layers[name] = svgo[name] = {
-            name, layer: layerEl, labels: labels || stub, _hidden: !!this._layerHidden,
-            showhide(state) { if (state === undefined) return !this._hidden; this._hidden = !state; layerEl.style.display = state ? "inline" : "none"; },
-        };
-        this._drawn = { layerEl, labels };
-        this._ensureUIFolder(name);
-        svgo.update(); // re-rasterize -> new surface texture (includes the outlines)
-        return true;
-    }
-
-    // A shape's outline as an SVG path in overlay (flat-uv) coords. A bezier is emitted as a
-    // native cubic path. Only ROIs have the legacy vertex-ring fallback (v1 files); a sulcus is
-    // always bezier-backed, since it is created from a fitted open curve.
-    _shapeSvgPath(shape, W, H) {
-        // Fall THROUGH when the bezier can't be emitted (too few anchors for its kind) rather than
-        // returning its null: an imported file could carry a malformed bezier, and an ROI that still
-        // has a good `outline` must render from that instead of silently vanishing.
-        if (shape.bezier && shape.bezier.anchors) {
-            const d = this._bezierSvgPath(shape.bezier, W, H);
-            if (d) return d;
-        }
-        if (shape.kind === "sulcus") return null;   // a sulcus is bezier-only; it has no outline
-        if (!shape.outline || shape.outline.length < 3) return null;
-        const pts = [];
-        for (const o of shape.outline) {
-            const uv = this.vertexUV(o);
-            if (uv) pts.push([uv[0] * W, (1 - uv[1]) * H]);
-        }
-        if (pts.length < 3) return null;
-        const c = chaikin(pts, 2);
-        let d = "M" + c[0][0].toFixed(2) + "," + c[0][1].toFixed(2);
-        for (let i = 1; i < c.length; i++) d += "L" + c[i][0].toFixed(2) + "," + c[i][1].toFixed(2);
-        return d + "Z";
-    }
-
-    // Cubic-bezier path from {anchors,inHandles,outHandles} in flat-uv -> viewBox px. This IS
-    // pycortex's overlay coordinate space, so the `d` we emit here is directly usable in an
-    // overlays.svg. A CLOSED bezier wraps back to anchor 0 and ends with `Z`; an OPEN one (a
-    // sulcus) has n-1 segments and MUST NOT close — the missing `Z` is exactly what distinguishes
-    // a sulcus from an ROI on disk.
-    _bezierSvgPath(bez, W, H) {
-        if (!hasCurve(bez)) return null;
-        const P = (uv) => (uv[0] * W).toFixed(2) + "," + ((1 - uv[1]) * H).toFixed(2);
-        let d = "M" + P(bez.anchors[0]);
-        // segControls/segCount own the wrap rule (n segments closed, n-1 open) — the same walk the
-        // samplers use, so what is baked here is exactly the curve the editor shows.
-        for (let i = 0, segs = segCount(bez); i < segs; i++) {
-            const [, c1, c2, p3] = segControls(bez, i);
-            d += "C" + P(c1) + " " + P(c2) + " " + P(p3);
-        }
-        return isClosed(bez) ? d + "Z" : d;
-    }
-
-    /*
-     * Serialize drawn sulci as a standalone SVG whose `sulci` layer drops straight into a
-     * subject's overlays.svg. The `d` strings come from the SAME uv->viewBox mapping the live
-     * overlay uses, which is pycortex's own overlay coordinate space.
-     *
-     * Returns null when the SVG overlay hasn't loaded (so we don't know the coordinate space),
-     * and "" when it has loaded but no sulcus yielded a path. The caller must tell those apart:
-     * they are different failures with different fixes.
-     */
-    exportSulciMarkup(sulci) {
-        const svgo = this.surface.svg;
-        if (!svgo || !svgo.svg) return null;
-        const { W, H } = this._overlayDims(svgo);
-        return exportSulciSvg(sulci, {
-            pathFor: (bez) => (bez ? this._bezierSvgPath(bez, W, H) : null),
-            width: W, height: H,
-        });
-    }
-
-    /*
-     * The WebGL viewer's label convention: a flat vertex index, right-hemisphere indices offset by
-     * the left hemisphere's vertex count. BROWSER-ONLY. `svgoverlay.js`'s Labels reads `data-ptidx`
-     * off a <text> to place it; the Python side does the reverse (`SVGOverlay.set_coords` computes
-     * `data-ptidx` from the label's x/y). So this value must never be written into exported markup
-     * — see core/svg-export.js. It is used solely for the live, in-viewer overlay layer.
-     */
-    _labelPtidx(lv) {
-        if (!lv) return null;
-        const leftlen = attrCount(this.posdata.left.positions[0]);
-        return lv.h === "left" ? lv.g : leftlen + lv.g;
-    }
-
-    setLayerVisible(name, shapes, labels) {
-        if (shapes !== undefined) {
-            this._layerHidden = !shapes;
-            if (this._drawn && this._drawn.layerEl) this._drawn.layerEl.style.display = shapes ? "inline" : "none";
-            if (this.surface.svg) this.surface.svg.update();
-        }
-        if (labels !== undefined) {
-            this._labelsHidden = !labels;
-            if (this._drawn && this._drawn.labels) this._drawn.labels.showhide(labels);
-        }
-    }
-
-    // Register a "drawn ROIs" folder under Surface > overlays, once (mirrors built-in rois/sulci).
-    _ensureUIFolder(name) {
-        if (this._uiFolderAdded) return;
-        const svgo = this.surface.svg, self = this;
-        if (!svgo || !svgo.ui) return;
-        try {
-            svgo.ui.addFolder("drawn ROIs", true).add({
-                visible: { action: [{ get f() { return !self._layerHidden; }, set f(v) { self.setLayerVisible(name, v, undefined); } }, "f"] },
-            });
-            this._uiFolderAdded = true;
-        } catch (e) { console.warn("[roidraw] control-panel folder add failed:", e); }
-    }
+    exportSulciMarkup(sulci) { return this._overlay.exportSulciMarkup(sulci); }
 
     // --- host control panel + defaults ------------------------------------------------
 
@@ -633,40 +431,42 @@ export class PycortexAdapter extends ViewerAdapter {
         if (el) el.style.display = visible ? "" : "none";
     }
 
-    // pycortex-specific startup niceties (not part of the portable contract):
-    // hide the built-in ROI layer (keep sulci), and re-collapse the late "data layers" folder.
-    // Every timer and listener started here is tracked so destroy() can undo it: autoAttach
-    // destroys a prior drawer before attaching a new one, and an orphaned retry chain would keep
-    // poking a dead viewer for seconds afterwards.
+    // pycortex startup niceties: hide the built-in ROI layer (keep sulci), and re-collapse the
+    // late "data layers" folder. Every timer and listener started here is tracked so destroy() can
+    // undo it: autoAttach destroys a prior drawer before attaching a new one, and an orphaned retry
+    // chain would keep poking a dead viewer for seconds afterwards.
     applyHostDefaults() {
-        const trySetOverlays = (tries) => {
-            const svg = this.surface && this.surface.svg;
-            if (!svg || !svg.layers || !(svg.rois || svg.sulci)) {
-                if (tries > OVERLAY_RETRY_MAX) return;
-                this._timers.later(() => trySetOverlays(tries + 1), OVERLAY_RETRY_MS);
-                return;
-            }
+        this._timers.poll(() => {
+            const svg = this.surface.svg;
+            if (!svg || !svg.layers || !(svg.rois || svg.sulci)) return false;
             if (svg.rois) { svg.rois.showhide(false); if (svg.rois.labels) svg.rois.labels.showhide(false); }
             if (svg.sulci) svg.sulci.showhide(true);
             this.requestRender();
-        };
-        trySetOverlays(0);
-        // the datasets folder is built open after data loads (post-attach); re-collapse a few times
+            return true;
+        }, { tries: OVERLAY_RETRY_TRIES, ms: OVERLAY_RETRY_MS });
+        // the datasets folder is built open after data loads (post-attach); re-collapse a few times,
+        // and on every setData within the startup window (the listener is removed when it closes).
         COLLAPSE_SCHEDULE_MS.forEach((ms) => this._timers.later(() => this.collapseControlPanel(false), ms));
-        const t0 = Date.now();
         if (this.viewer.addEventListener) {
-            this._onSetData = () => { if (Date.now() - t0 < COLLAPSE_WINDOW_MS) this.collapseControlPanel(false); };
+            this._onSetData = () => this.collapseControlPanel(false);
             this.viewer.addEventListener("setData", this._onSetData);
+            this._timers.later(() => this._removeSetDataListener(), COLLAPSE_WINDOW_MS);
         }
     }
 
-    // Release everything applyHostDefaults() started. The overlay layer itself is left in place:
-    // the controller clears it (setOverlayLayer(name, [])) before it tears the adapter down.
-    destroy() {
-        this._timers.clear();
+    _removeSetDataListener() {
         if (this._onSetData && this.viewer.removeEventListener)
             this.viewer.removeEventListener("setData", this._onSetData);
         this._onSetData = null;
+    }
+
+    // Release everything applyHostDefaults() started and unbind the control-panel folder. The
+    // overlay layer itself is left in place: the controller clears it (setOverlayLayer(name, []))
+    // before it tears the adapter down. Safe to call more than once.
+    destroy() {
+        this._timers.clear();
+        this._removeSetDataListener();
+        this._overlay.destroy();
     }
 
     // Rebuild posdata from hemi attributes if the picker's isn't available (mirrors pycortex).

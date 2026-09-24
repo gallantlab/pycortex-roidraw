@@ -31,7 +31,6 @@ export class FakeSurfaceAdapter extends ViewerAdapter {
         this._flat = flat;
         this._radius = 100;
         this._mixCbs = [];
-        this.calls = { flatten: 0, setOverlayLayer: 0 };  // spy counters for wiring tests
         this._left = this._buildHemi(0);
         this._right = this._buildHemi(RIGHT_U_OFFSET);
     }
@@ -94,9 +93,9 @@ export class FakeSurfaceAdapter extends ViewerAdapter {
         return { left: within(this._left), right: within(this._right) };
     }
 
-    setOverlayLayer() { this.calls.setOverlayLayer++; return true; }   // the contract returns a boolean
+    setOverlayLayer() { return true; }   // the contract returns a boolean
     setLayerVisible() {}
-    flatten() { this.calls.flatten++; this._flat = true; this._emitMix(); }
+    flatten() { this._flat = true; this._emitMix(); }
     setCameraTarget() {}
     setCameraRadius(r) { this._radius = r; }
     cameraRadius() { return this._radius; }
@@ -105,5 +104,4 @@ export class FakeSurfaceAdapter extends ViewerAdapter {
 
     // --- test drivers (not part of the contract) ---
     _emitMix() { for (const cb of this._mixCbs) cb(); }
-    setFlat(flat) { this._flat = flat; this._emitMix(); }   // simulate the unfold slider moving
 }

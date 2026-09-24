@@ -1,17 +1,16 @@
 /*
  * The segment topology of a bezier — how many segments, which anchors each joins, how few anchors
- * are allowed — used to be re-stated in each sampler, the nearest-point search, deleteAnchor, the
- * edit overlay and the adapter's SVG path writer. These tests pin that they all read ONE
- * definition (segCount / segControls / minAnchors / hasCurve in core/bezier.js) and agree.
+ * are allowed — is read by each sampler, the nearest-point search, deleteAnchor, the edit overlay
+ * and the SVG path writer (core/svg-path.js). These tests pin that they all read ONE definition
+ * (segCount / segControls / nextIndex / minAnchors / hasCurve in core/bezier.js) and agree.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    bezierFromAnchors, segCount, segControls, minAnchors, hasCurve, isClosed,
-    evalBezier, evalClosedBezier, evalOpenBezier, nearestOnBezier, nearestOnClosedBezier,
-    nearestOnOpenBezier, deleteAnchor,
+    bezierFromAnchors, segCount, segControls, nextIndex, minAnchors, hasCurve, isClosed,
+    evalBezier, evalClosedBezier, evalOpenBezier, nearestOnBezier, deleteAnchor,
 } from "../core/bezier.js";
-import { PycortexAdapter } from "../adapter/pycortex-adapter.js";
+import { bezierSvgPath } from "../core/svg-path.js";
 
 const SQ = [[0, 0], [1, 0], [1, 1], [0, 1]];
 const closed = bezierFromAnchors(SQ, true);
@@ -21,6 +20,8 @@ test("minAnchors / hasCurve: 3 for a closed ring, 2 for an open curve", () => {
     assert.equal(minAnchors(closed), 3);
     assert.equal(minAnchors(open), 2);
     assert.equal(minAnchors({ anchors: [] }), 3);      // a missing `closed` flag means closed
+    assert.equal(minAnchors(closed, false), 2);        // the explicit argument overrides the flag
+    assert.equal(minAnchors(open, true), 3);
     assert.equal(hasCurve(bezierFromAnchors([[0, 0], [1, 1]], true)), false);
     assert.equal(hasCurve(bezierFromAnchors([[0, 0], [1, 1]], false)), true);
     assert.equal(hasCurve(null), false);
@@ -30,6 +31,11 @@ test("minAnchors / hasCurve: 3 for a closed ring, 2 for an open curve", () => {
 test("segControls: the wrap segment exists only on a closed ring; it joins anchor n-1 to anchor 0", () => {
     assert.equal(segCount(closed), 4);
     assert.equal(segCount(open), 3);
+    assert.equal(segCount(closed, false), 3);          // count a ring AS IF open
+    assert.equal(segCount(open, true), 4);
+    assert.equal(nextIndex(closed, 3), 0);             // wraps
+    assert.equal(nextIndex(open, 2), 3);
+    assert.equal(nextIndex(closed, 3, false), 4);      // AS IF open: no wrap
     const [p0, c1, c2, p3] = segControls(closed, 3);
     assert.deepEqual(p0, closed.anchors[3]);
     assert.deepEqual(c1, closed.outHandles[3]);
@@ -48,26 +54,32 @@ test("evalBezier dispatches to the same sampler the explicit forms use", () => {
     assert.deepEqual(evalOpenBezier(open, 5).at(-1), open.anchors[3]);
 });
 
-test("nearestOnBezier dispatches to the same search the explicit forms use", () => {
-    const pt = [0.5, -0.2];
-    assert.deepEqual(nearestOnBezier(closed, pt), nearestOnClosedBezier(closed, pt));
-    assert.deepEqual(nearestOnBezier(open, pt), nearestOnOpenBezier(open, pt));
-    // a point by the missing wrap segment of the OPEN curve is far; on the ring it is near
+test("nearestOnBezier walks segCount segments: the wrap segment only on a closed ring", () => {
+    // a point on the ring's wrap segment (anchor 3 -> anchor 0) is ON the closed curve and reported
+    // there; the open curve has no such segment, so the same point is far from it
     const byWrap = [0, 0.5];
-    assert.ok(nearestOnOpenBezier(open, byWrap).dist > nearestOnClosedBezier(closed, byWrap).dist);
+    const hitClosed = nearestOnBezier(closed, byWrap), hitOpen = nearestOnBezier(open, byWrap);
+    assert.equal(hitClosed.seg, 3);
+    assert.ok(hitClosed.dist < 0.2);                    // the smooth ring bulges ~0.125 past the edge
+    assert.ok(hitOpen.seg < segCount(open));
+    assert.ok(hitOpen.dist > hitClosed.dist);
+    // below the floor for its kind: no curve to search
+    assert.equal(nearestOnBezier(bezierFromAnchors(SQ.slice(0, 2), true), byWrap), null);
+    assert.ok(nearestOnBezier(bezierFromAnchors(SQ.slice(0, 2), false), byWrap));
 });
 
 test("deleteAnchor floors at minAnchors for each kind", () => {
     const tri = bezierFromAnchors(SQ.slice(0, 3), true);
-    assert.equal(deleteAnchor(tri, 0), tri);                         // 3 is the closed floor
+    assert.deepEqual(deleteAnchor(tri, 0), tri);                     // 3 is the closed floor
+    assert.notEqual(deleteAnchor(tri, 0), tri);                      // ...and the refusal is a copy
     const line = bezierFromAnchors(SQ.slice(0, 2), false);
-    assert.equal(deleteAnchor(line, 0), line);                       // 2 is the open floor
+    assert.deepEqual(deleteAnchor(line, 0), line);                   // 2 is the open floor
+    assert.notEqual(deleteAnchor(line, 0), line);
     assert.equal(deleteAnchor(bezierFromAnchors(SQ.slice(0, 3), false), 0).anchors.length, 2);
 });
 
-test("the adapter's SVG path walks the same segments: one C per segment, Z only when closed", () => {
-    // _bezierSvgPath reads only its arguments + core/bezier.js, so it runs without a viewer.
-    const path = (bez) => PycortexAdapter.prototype._bezierSvgPath.call({}, bez, 100, 100);
+test("the SVG path writer walks the same segments: one C per segment, Z only when closed", () => {
+    const path = (bez) => bezierSvgPath(bez, 100, 100);
     const dc = path(closed), dopen = path(open);
     assert.equal((dc.match(/C/g) || []).length, segCount(closed));
     assert.equal((dopen.match(/C/g) || []).length, segCount(open));

@@ -54,13 +54,24 @@ checkbox or slider holding focus must not swallow a gesture.
 anchor regions: the template block lands between the `python_interface` block and
 `{% block javascripts %}`; the `view.py` kwarg/docstring/generate-arg insertions land in order and
 only in `make_static` (both the docstring and the `tpl.generate` anchors appear twice in the real
-file — the fixtures reproduce that); reruns are no-ops; a missing anchor exits loudly having
-written nothing. It also pins that the built bundle stays free of the two patterns
+file — the fixtures reproduce that, and the tests assert the twins come through byte-for-byte);
+reruns are no-ops; a missing anchor, a partly staged file, or a stray `roidraw` exits loudly.
+`stage()` itself is driven against a throwaway fake checkout: it stages all four files, a rerun
+writes nothing, and both a drifted `view.py` and a missing `cortex/tests/` exit loudly with every
+file in the checkout unchanged. It also pins that the built bundle stays free of the two patterns
 `cortex/webgl/htmlembed.py` rewrites inside every embedded script (`new Worker(`,
 `attr('src', …)`) — the reason the CSS rides inside the JS is the same module's non-nesting CSS
-brace parser. The shipped `upstream/test_webgl_roidraw.py` needs an importable `cortex`, so it runs
-in pycortex's CI, not here; its exact assertions were reproduced against the real patched template
-with Tornado (pycortex's template engine) when the kit was built.
+brace parser (skipped, not failed, when `dist/` has not been built). The shipped
+`upstream/test_webgl_roidraw.py` needs an importable `cortex`, so it runs in pycortex's CI, not
+here; its exact assertions were reproduced against the real patched template with Tornado
+(pycortex's template engine) when the kit was built.
+
+### Static-viewer bake — unit
+`test/test_bake.py` pins `bake.py`: the two tags go before the *last* `</body>` (then the last
+`</html>`, then the end of a closing-tag-free `make_static` fragment), so a closing-tag literal
+inside an inlined `<script>` is left alone; reinjection is a no-op. Against a throwaway viewer
+directory it checks the missing-bundle error, the HTML default (`index.html`, then `viewer.html`,
+or `--html`), and that a rerun still refreshes the copied bundle.
 
 ### Sulcus SVG export — unit (pure writer) + a real XML parser
 `core/svg-export.js` is the pure writer for the sulci layer of an `overlays.svg`.
@@ -131,7 +142,14 @@ edit overlay delegates to, so the hit-testing is testable without a canvas.
   the adapter needs (THREE, `mriview.get_position`, the surface + pivots, and **both** hemispheres'
   `position` and `uv` geometry, svgoverlay) and, at attach time, throws a **loud, specific** error
   naming what's missing — so if pycortex drifts (renamed `get_position`, restructured surface), users
-  get a clear message instead of silent wrongness.
+  get a clear message instead of silent wrongness. `surfaceReady()` (the autoAttach poll) uses the
+  same `surfaceProblems()` rule, so the poll never hands over a surface preflight would refuse.
+- The same file drives a real `PycortexAdapter` against a DOM-free fake pycortex host: re-attaching
+  rebinds the layer toggle instead of stacking a second one, a renamed layer deletes the old
+  registration, the host's `showhide` goes through `setLayerVisible`, the `setData` listener is gone
+  after the collapse window, and `safeColor` refuses malformed colors.
+- `test/svg-path.test.js` covers the pure path writer (`core/svg-path.js`): open curves carry no
+  trailing `Z`, closed ones do, and coordinates land in the overlay's viewBox.
 
 ### Distributed bundle — smoke
 `test/bundle.test.js` loads the freshly built `dist/roidraw.bundle.js` in a sandbox and asserts it
@@ -160,13 +178,12 @@ That check is **not in CI** — it needs a baked static viewer, which this repo 
 
 Closed by that check, against a real pycortex viewer:
 
-- `adapter/pycortex-adapter.js`'s open-curve rendering. With three sulci and one ROI in the model,
+- The open-curve rendering (`adapter/pycortex-overlay.js` + `core/svg-path.js`). With three sulci and one ROI in the model,
   `setOverlayLayer` produced 8 `<path>` elements (halo + stroke per shape): the 6 sulcal ones carry
   no trailing `Z`, the 2 ROI ones do.
 - `exportSulciMarkup` on the live overlay: 3 paths, none closing; two same-named `CS` curves merged
   into one `<g inkscape:label="CS">` with a `<path>` each; a hostile name XML-escaped; style exactly
-  `fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round`. (That run predates
-  the export rewrite: it saw the old bare fragment, `<text data-ptidx>` labels and all. Re-run it.)
+  `fill:none;stroke:white;stroke-width:6;stroke-opacity:0.6;stroke-linecap:round`.
 - No sulcus leaks into the `vertexset-v2` JSON, and its `format` string is unchanged.
 
 ### What roidraw writes, and how far it has been read back
@@ -200,13 +217,14 @@ against real surface data.
 Still open, in both directions:
 
 - The browser **`_import`** path — `FileReader`, the empty-file guard, `reader.onerror`,
-  `backfillBezier`/`backfillLabel` for v1 files, `_sync`, the panel refresh — has **zero** coverage.
-  No test touches `FileReader` or `_import`, and the live-viewer check called `toJSON` only, never
+  `_sync`, the panel refresh — has **zero** coverage. (The back-fill step itself,
+  `backfillImported`, is unit-tested in `draw-pipeline.test.js`.) No test touches `FileReader` or
+  `_import`, and the live-viewer check called `toJSON` only, never
   `loadJSON`.
 - Both **download** paths (`Blob` → anchor → `revokeObjectURL`), for JSON and for SVG. The 4000 ms
   deferred teardown exists because Firefox otherwise writes a 0-byte file — and is untested.
-- The exported `sulci.svg` fragment has never been round-tripped through pycortex's
-  `svgoverlay.py` parser (see above).
+- The live-viewer `exportSulciMarkup` check above predates the export rewrite (it saw the old bare
+  fragment, `<text data-ptidx>` labels and all) and has not been re-run against the current writer.
 - `index.js` has no unit harness. The `labelForCurve` regression guard (a reshaped sulcus must
   relabel) sits on the pure helper in `draw-pipeline.js`, not on `_applyEdit`'s sulcus branch that
   calls it.

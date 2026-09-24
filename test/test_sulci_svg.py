@@ -23,7 +23,6 @@ What it pins, and the pycortex code each line stands in for:
 import json
 import os
 import subprocess
-import sys
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -79,8 +78,8 @@ def svg(tag):
 
 def find_layer(parent, label):
     """cortex/svgoverlay.py's _find_layer, verbatim in behavior."""
-    layers = [l for l in parent.findall("{%s}g[@{%s}label]" % (SVGNS, INKNS))
-              if l.get(ink("label")) == label]
+    layers = [layer for layer in parent.findall("{%s}g[@{%s}label]" % (SVGNS, INKNS))
+              if layer.get(ink("label")) == label]
     if not layers:
         raise ValueError("Cannot find layer %s" % label)
     return layers[0]
@@ -139,4 +138,4 @@ class TestSulciSvg(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2) if sys.argv[1:] else unittest.main()
+    unittest.main()

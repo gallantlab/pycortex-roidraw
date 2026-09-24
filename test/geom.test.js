@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert";
-import { pointInPolygon, ndcToPixel, polygonBounds, inBounds, simplifyRDP, chaikin, centroid } from "../core/geom.js";
+import {
+    pointInPolygon, ndcToPixel, polygonBounds, inBounds, simplifyRDP, chaikin, centroid,
+    sqDist, nearestIndex, dedupeConsecutive, dedupeRing,
+} from "../core/geom.js";
 
 const SQUARE = [[0, 0], [10, 0], [10, 10], [0, 10]];
 
@@ -47,4 +50,26 @@ test("chaikin: doubles points/iteration, stays within bbox", () => {
 test("centroid: mean; null when empty", () => {
     assert.deepStrictEqual(centroid(SQUARE), [5, 5]);
     assert.strictEqual(centroid([]), null);
+});
+
+test("sqDist / nearestIndex: nearest point, first on a tie, -1 when empty", () => {
+    assert.strictEqual(sqDist([0, 0], [3, 4]), 25);
+    const pts = [[0, 0], [5, 5], [1, 1], [9, 0]];
+    assert.strictEqual(nearestIndex(pts, [1.2, 0.9]), 2);
+    assert.strictEqual(nearestIndex(pts, [8, 1]), 3);
+    assert.strictEqual(nearestIndex([[1, 0], [-1, 0]], [0, 0]), 0, "a tie keeps the first");
+    assert.strictEqual(nearestIndex([], [0, 0]), -1);
+});
+
+test("dedupeConsecutive / dedupeRing: drop repeats; the ring form also drops a closing repeat", () => {
+    const pts = [[0, 0], [0, 0], [1, 0], [1, 0], [1, 1], [0, 0]];
+    assert.deepStrictEqual(dedupeConsecutive(pts), [[0, 0], [1, 0], [1, 1], [0, 0]]);
+    assert.deepStrictEqual(dedupeRing(pts), [[0, 0], [1, 0], [1, 1]]);
+    assert.deepStrictEqual(dedupeRing([[2, 2], [2, 2]]), [[2, 2]]);
+    assert.deepStrictEqual(dedupeRing([]), []);
+    // a custom equality (outline rings are {h, g} vertex refs, not points)
+    const same = (a, b) => a.h === b.h && a.g === b.g;
+    const ring = [{ h: "left", g: 1 }, { h: "left", g: 1 }, { h: "right", g: 1 }, { h: "left", g: 1 }];
+    assert.deepStrictEqual(dedupeRing(ring, same), [{ h: "left", g: 1 }, { h: "right", g: 1 }]);
+    assert.notStrictEqual(dedupeConsecutive(pts), pts, "a new array, not the input");
 });

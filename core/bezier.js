@@ -13,31 +13,46 @@
  * truth, not re-derived from the anchors. A parallel `smooth[]` flag marks each anchor smooth
  * (handles kept symmetric about the anchor) or a corner/cusp (handles move independently).
  */
-import { simplifyRDP, centroid } from "./geom.js";
+import { simplifyRDP, centroid, dedupeConsecutive, dedupeRing } from "./geom.js";
 
-// RDP tolerance in UV units (~0.4% of the flatmap) — drops tremor. Note: outline.js has its own
-// PIXEL_RDP_EPSILON in *pixel* units (~1000× this); the two live in different coordinate spaces.
+// RDP tolerance in UV units (~0.4% of the flatmap) for picking a fitted curve's ANCHORS — drops
+// tremor and keeps the anchor count low enough to edit by hand. Two related tolerances live
+// elsewhere: outline.js's PIXEL_RDP_EPSILON is in *pixel* units (~1000× this; a different
+// coordinate space), and draw-pipeline.js's OUTLINE_EPS_UV (0.003) simplifies an already-smooth
+// sampled curve into a vertex ring, a different job that wants to hug the curve a little tighter.
 const UV_RDP_EPSILON = 0.004;
+
+const EVAL_SAMPLES = 12;      // default samples/segment when sampling a curve to a polyline
+const NEAREST_SAMPLES = 24;   // default samples/segment for the nearest-point search
+const DEGENERATE_LEN = 1e-9;  // a direction/handle shorter than this (uv units) has no usable direction
 
 /* True unless explicitly opened. A bezier from an older file has no `closed` key, so a missing
  * flag means closed. An ABSENT bezier is not a closed one — it has no shape at all — so callers
  * that dispatch on this (evalBezier, nearestOnBezier) still see the "nothing to do" branch. */
 export function isClosed(bez) { return !!bez && bez.closed !== false; }
 
-/* Number of cubic segments: a closed ring wraps (n), an open curve does not (n-1). */
-export function segCount(bez) {
+/* Number of cubic segments: a closed ring wraps (n), an open curve does not (n-1). `closed`
+ * defaults to the bezier's own flag — pass it to count a ring AS IF open (or vice versa). */
+export function segCount(bez, closed = isClosed(bez)) {
     const n = (bez && bez.anchors) ? bez.anchors.length : 0;
-    return isClosed(bez) ? n : Math.max(0, n - 1);
+    return closed ? n : Math.max(0, n - 1);
 }
 
 /* The fewest anchors a bezier needs to be a curve at all: a closed ring must bound an area (3);
  * an open curve is a line between 2. THE one definition — the samplers, the nearest-point search,
- * deleteAnchor's floor, the edit overlay and the adapter's SVG path writer all read it here. */
-export function minAnchors(bez) { return isClosed(bez) ? 3 : 2; }
+ * deleteAnchor's floor, the edit overlay and the SVG path writer (core/svg-path.js) all read it here.
+ * `closed` defaults to the bezier's own flag, as in segCount. */
+export function minAnchors(bez, closed = isClosed(bez)) { return closed ? 3 : 2; }
 
 /* True when `bez` has enough anchors to be sampled/rendered as its kind. */
 export function hasCurve(bez) {
     return !!(bez && bez.anchors) && bez.anchors.length >= minAnchors(bez);
+}
+
+/* The anchor after i: wraps from the last back to the first on a closed ring; on an open curve
+ * the last anchor has no successor (the result is n, past the end). */
+export function nextIndex(bez, i, closed = isClosed(bez)) {
+    return closed ? (i + 1) % bez.anchors.length : i + 1;
 }
 
 /* The four control points of segment i (anchor i -> anchor i+1):
@@ -47,13 +62,13 @@ export function hasCurve(bez) {
  * versa). Every walk over a bezier's segments goes through here, so the wrap rule lives once. */
 export function segControls(bez, i, closed = isClosed(bez)) {
     const { anchors, inHandles, outHandles } = bez;
-    const j = closed ? (i + 1) % anchors.length : i + 1;
+    const j = nextIndex(bez, i, closed);
     return [anchors[i], outHandles[i], inHandles[j], anchors[j]];
 }
 
 /* Catmull-Rom -> cubic-bezier tangent handles. Returns { inHandles, outHandles } parallel to
  * `anchors`. For a CLOSED ring every anchor's handles are mirrored about it, using the wrapped
- * neighbours. For an OPEN curve the endpoints have no neighbour on one side: they get a one-sided
+ * neighbors. For an OPEN curve the endpoints have no neighbor on one side: they get a one-sided
  * tangent (a third of the terminal segment), and their unused handle sits on the anchor itself. */
 export function catmullRomHandles(anchors, closed = true) {
     const n = anchors.length;
@@ -80,12 +95,15 @@ export function catmullRomHandles(anchors, closed = true) {
     return { inHandles, outHandles };
 }
 
-/* Build a bezier descriptor from anchors alone (handles auto-derived). Every anchor of a closed
- * ring is smooth; an open curve's ENDPOINTS are corners (no symmetric tangent exists there). */
+/* The default smooth flag for anchor i of n: every anchor of a closed ring is smooth; an open
+ * curve's ENDPOINTS are corners (no symmetric tangent exists there). */
+const defaultSmooth = (closed, i, n) => closed || (i !== 0 && i !== n - 1);
+
+/* Build a bezier descriptor from anchors alone (handles auto-derived, smooth flags defaulted). */
 export function bezierFromAnchors(anchors, closed = true) {
     const a = anchors.map((p) => [p[0], p[1]]);
     const { inHandles, outHandles } = catmullRomHandles(a, closed);
-    const smooth = a.map((_, i) => closed || (i !== 0 && i !== a.length - 1));
+    const smooth = a.map((_, i) => defaultSmooth(closed, i, a.length));
     return { closed, anchors: a, inHandles, outHandles, smooth };
 }
 
@@ -109,37 +127,21 @@ function rotateToExtreme(pts) {
 
 /*
  * Fit an editable closed bezier to an ordered ring of points (e.g. the outline ring mapped to uv).
- * ring : [[u,v], ...] (>= 3). epsilon: RDP tolerance in uv units.
- * Returns { closed:true, anchors:[[u,v]], inHandles:[[u,v]], outHandles:[[u,v]] } or null.
+ * ring : [[u,v], ...] (>= 3 distinct points). epsilon: RDP tolerance in uv units.
+ * Returns { closed:true, anchors:[[u,v]], inHandles:[[u,v]], outHandles:[[u,v]], smooth:[bool] },
+ * or null when fewer than 3 distinct points remain once repeats are removed.
  */
 export function fitClosedBezier(ring, { epsilon = UV_RDP_EPSILON } = {}) {
-    if (!ring || ring.length < 3) return null;
-    let pts = ring.slice();
-    // drop a duplicated closing point so the ring has no zero-length edge. Guard with > 3 so a
-    // genuine 3-point ring is never reduced below the 3 anchors a closed bezier needs.
-    const f = pts[0], l = pts[pts.length - 1];
-    if (pts.length > 3 && f[0] === l[0] && f[1] === l[1]) pts.pop();
+    if (!ring) return null;
+    // no zero-length edges: drop repeated points, including a closing point that repeats the first.
+    // The seam of the result is then two distinct points, so RDP (which keeps both) can't duplicate it.
+    let pts = dedupeRing(ring);
+    if (pts.length < 3) return null;
 
     pts = rotateToExtreme(pts);                       // make the RDP seam a stable corner (see above)
     let anchors = simplifyRDP(pts, epsilon);
     if (anchors.length < 3) anchors = pts;            // RDP over-simplified a tiny ROI
-    // simplifyRDP keeps both endpoints; on a closed ring that can duplicate the seam — dedupe
-    if (anchors.length > 3) {
-        const a0 = anchors[0], aN = anchors[anchors.length - 1];
-        if (a0[0] === aN[0] && a0[1] === aN[1]) anchors.pop();
-    }
-    if (anchors.length < 3) return null;
     return bezierFromAnchors(anchors);
-}
-
-/* Drop consecutive duplicate points (a slow drag emits repeats at the same pixel). */
-function dedupe(pts) {
-    const out = [];
-    for (const p of pts) {
-        const q = out[out.length - 1];
-        if (!q || q[0] !== p[0] || q[1] !== p[1]) out.push([p[0], p[1]]);
-    }
-    return out;
 }
 
 /*
@@ -152,7 +154,7 @@ function dedupe(pts) {
  */
 export function fitOpenBezier(polyline, { epsilon = UV_RDP_EPSILON } = {}) {
     if (!polyline || polyline.length < 2) return null;
-    const pts = dedupe(polyline);
+    const pts = dedupeConsecutive(polyline);
     if (pts.length < 2) return null;
     let anchors = simplifyRDP(pts, epsilon);
     if (anchors.length < 2) anchors = pts;          // RDP can't drop an endpoint, but be defensive
@@ -173,10 +175,10 @@ function cubicAt(p0, c1, c2, p3, t) {
  * for that kind. This is the single sampler behind evalClosedBezier / evalOpenBezier / evalBezier.
  */
 function sampleBezier(bez, closed, samplesPerSeg) {
-    if (!bez || !bez.anchors || bez.anchors.length < (closed ? 3 : 2)) return [];
+    if (!bez || !bez.anchors || bez.anchors.length < minAnchors(bez, closed)) return [];
     const n = bez.anchors.length, out = [];
     const steps = Math.max(1, samplesPerSeg | 0);
-    const segs = closed ? n : n - 1;
+    const segs = segCount(bez, closed);
     for (let i = 0; i < segs; i++) {
         const [p0, c1, c2, p3] = segControls(bez, i, closed);
         for (let s = 0; s < steps; s++) out.push(cubicAt(p0, c1, c2, p3, s / steps));
@@ -187,18 +189,19 @@ function sampleBezier(bez, closed, samplesPerSeg) {
 
 /* Sample a bezier AS a closed ring (its own `closed` flag is ignored — see labelForCurve's caveat
  * in draw-pipeline.js for why the explicit forms exist). */
-export function evalClosedBezier(bez, samplesPerSeg = 12) { return sampleBezier(bez, true, samplesPerSeg); }
+export function evalClosedBezier(bez, samplesPerSeg = EVAL_SAMPLES) { return sampleBezier(bez, true, samplesPerSeg); }
 
 /* Sample a bezier AS an open curve: n-1 segments, no wrap, final anchor appended. */
-export function evalOpenBezier(bez, samplesPerSeg = 12) { return sampleBezier(bez, false, samplesPerSeg); }
+export function evalOpenBezier(bez, samplesPerSeg = EVAL_SAMPLES) { return sampleBezier(bez, false, samplesPerSeg); }
 
 /* Sample any bezier, dispatching on its `closed` flag. */
-export function evalBezier(bez, samplesPerSeg = 12) { return sampleBezier(bez, isClosed(bez), samplesPerSeg); }
+export function evalBezier(bez, samplesPerSeg = EVAL_SAMPLES) { return sampleBezier(bez, isClosed(bez), samplesPerSeg); }
 
 /* ---------------------------------------------------------------------------------------------
  * Editing operations. All take a bezier descriptor and return a NEW one (no mutation), so the
  * edit overlay can keep a clean working copy and the host can swap it in on commit. They preserve
- * the {closed, anchors, inHandles, outHandles, smooth} shape; `smooth[i]` defaults to true.
+ * the {closed, anchors, inHandles, outHandles, smooth} shape; a missing `smooth[i]` takes the
+ * same default bezierFromAnchors gives (smooth, except an open curve's endpoints).
  * ------------------------------------------------------------------------------------------- */
 
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1]];
@@ -206,29 +209,28 @@ const add = (a, b) => [a[0] + b[0], a[1] + b[1]];
 const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 const len = (v) => Math.hypot(v[0], v[1]);
 
-/* Deep copy, back-filling a missing `smooth` array (older files) as all-smooth. */
+/* Deep copy. A missing `closed` flag reads as closed (isClosed); a missing or short `smooth[]`
+ * is padded with the bezierFromAnchors default and an over-long one truncated, so there is exactly
+ * one flag per anchor (an `undefined` would silently read as a corner). */
 export function cloneBezier(bez) {
-    const n = bez.anchors.length;
+    const n = bez.anchors.length, closed = isClosed(bez);
+    const has = (i) => Array.isArray(bez.smooth) && i < bez.smooth.length;
     return {
-        closed: bez.closed !== false,
+        closed,
         anchors: bez.anchors.map((p) => [p[0], p[1]]),
         inHandles: bez.inHandles.map((p) => [p[0], p[1]]),
         outHandles: bez.outHandles.map((p) => [p[0], p[1]]),
-        // one smooth flag per anchor: truncate an over-long array, pad a too-short one with `true`
-        // (a missing flag must default to smooth, not leak `undefined` which reads as a corner).
-        smooth: Array.from({ length: n }, (_, i) => (bez.smooth && i < bez.smooth.length) ? bez.smooth[i] : true),
+        smooth: Array.from({ length: n }, (_, i) => (has(i) ? bez.smooth[i] : defaultSmooth(closed, i, n))),
     };
 }
 
 /* Is `i` a live anchor index? The edit overlay carries a drag/hover target across pointer events,
- * so an anchor list that shrinks under it (Delete pressed mid-drag) leaves a stale index behind.
- * Writing through one used to append past the end of the handle arrays, silently desynchronizing
- * their lengths from `anchors`.
+ * so an anchor list can shrink under it (Delete pressed mid-drag) and leave a stale index behind.
  *
- * ALL FIVE edit ops below share one contract: an out-of-range index is a no-op that returns an
- * unchanged copy. Nothing throws, nothing half-applies. (They used to disagree — two refused, two
- * threw a TypeError, one silently corrupted the smooth[] array — which meant the caller's guard
- * had to know which op it was calling.) */
+ * Every edit op below shares one contract: an invalid argument (an out-of-range index, a split
+ * parameter outside (0,1), a move of an open curve's unused endpoint handle, a delete at the anchor
+ * floor) is a no-op that returns an unchanged COPY. Nothing throws, nothing half-applies, and the
+ * result is never the caller's own object. */
 const inRange = (bez, i) => Number.isInteger(i) && i >= 0 && i < bez.anchors.length;
 
 /* Is `seg` a live segment index? A closed ring has n segments (the last wraps); an open curve has
@@ -248,17 +250,25 @@ export function moveAnchor(bez, i, pos) {
     return b;
 }
 
+/* Is anchor i an endpoint of an OPEN curve (index 0 or n-1)? Such an anchor is always a corner
+ * and one of its handles is unused (collapsed onto the anchor): "in" at 0, "out" at n-1. */
+const isOpenEndpoint = (b, i) => !isClosed(b) && (i === 0 || i === b.anchors.length - 1);
+
 /* Move one tangent handle of anchor i. which = "out" | "in". If the anchor is smooth, the opposite
  * handle is mirrored about the anchor (kept collinear + equal length) so the curve stays smooth;
- * a corner anchor moves the handle independently. An out-of-range i returns the bezier unchanged. */
+ * a corner anchor moves the handle independently. An out-of-range i, or the unused handle of an
+ * open curve's endpoint ("in" at 0, "out" at n-1), returns the bezier unchanged. */
 export function moveHandle(bez, i, which, pos) {
     const b = cloneBezier(bez);
     if (!inRange(b, i)) return b;
+    const n = b.anchors.length;
+    if (!isClosed(b) && ((which === "in" && i === 0) || (which !== "in" && i === n - 1))) return b;
     const a = b.anchors[i];
     const here = which === "in" ? b.inHandles : b.outHandles;
     const other = which === "in" ? b.outHandles : b.inHandles;
     here[i] = [pos[0], pos[1]];
-    if (b.smooth[i]) other[i] = [2 * a[0] - pos[0], 2 * a[1] - pos[1]];   // mirror
+    // mirror; never onto an open endpoint's unused handle, even if a file marked the endpoint smooth
+    if (b.smooth[i] && !isOpenEndpoint(b, i)) other[i] = [2 * a[0] - pos[0], 2 * a[1] - pos[1]];
     return b;
 }
 
@@ -269,29 +279,30 @@ export function setAnchorSmooth(bez, i, smooth) {
     const b = cloneBezier(bez);
     if (!inRange(b, i)) return b;
     const n = b.anchors.length;
-    const endpoint = !isClosed(b) && (i === 0 || i === n - 1);
+    const endpoint = isOpenEndpoint(b, i);
     b.smooth[i] = endpoint ? false : !!smooth;
     if (endpoint || !smooth) return b;
     const a = b.anchors[i], prev = b.anchors[(i - 1 + n) % n], next = b.anchors[(i + 1) % n];
     let dir = sub(next, prev);
     let dl = len(dir);
-    if (dl < 1e-9) { dir = sub(b.outHandles[i], a); dl = len(dir); }
-    if (dl < 1e-9) { dir = [1, 0]; dl = 1; }
+    if (dl < DEGENERATE_LEN) { dir = sub(b.outHandles[i], a); dl = len(dir); }
+    if (dl < DEGENERATE_LEN) { dir = [1, 0]; dl = 1; }
     dir = [dir[0] / dl, dir[1] / dl];
     let r = (len(sub(b.outHandles[i], a)) + len(sub(b.inHandles[i], a))) / 2;
-    if (r < 1e-9) r = dl / 6;
+    if (r < DEGENERATE_LEN) r = dl / 6;
     b.outHandles[i] = [a[0] + dir[0] * r, a[1] + dir[1] * r];
     b.inHandles[i] = [a[0] - dir[0] * r, a[1] - dir[1] * r];
     return b;
 }
 
-/* Insert an anchor on segment `seg` at parameter t in (0,1), splitting the cubic with de Casteljau
- * so the curve shape is UNCHANGED. `seg` is in [0, n-1] on a closed ring and [0, n-2] on an open
- * curve (which has no wrap segment); out of range returns the bezier unchanged. */
+/* Insert an anchor on segment `seg` at parameter t, splitting the cubic with de Casteljau so the
+ * curve shape is UNCHANGED. `seg` is in [0, n-1] on a closed ring and [0, n-2] on an open curve
+ * (which has no wrap segment); t must lie strictly inside (0,1), since t = 0 or 1 would stack the
+ * new anchor on an existing one. Anything else returns the bezier unchanged. */
 export function splitSegment(bez, seg, t) {
     const b = cloneBezier(bez);
-    if (!segInRange(b, seg)) return b;
-    const j = isClosed(b) ? (seg + 1) % b.anchors.length : seg + 1;
+    if (!segInRange(b, seg) || !(t > 0 && t < 1)) return b;
+    const j = nextIndex(b, seg);
     const [p0, p1, p2, p3] = segControls(b, seg);
     const ab = lerp(p0, p1, t), bc = lerp(p1, p2, t), cd = lerp(p2, p3, t);
     const abc = lerp(ab, bc, t), bcd = lerp(bc, cd, t);
@@ -319,15 +330,14 @@ function normalizeOpenEndpoints(b) {
     return b;
 }
 
-/* Remove anchor i. A closed bezier needs 3 anchors; an open one needs only 2. Returns the input
- * unchanged at the floor, or when i is out of range. Neighboring handles are left as-is, so the
+/* Remove anchor i. A closed bezier needs 3 anchors; an open one needs only 2. Returns an unchanged
+ * copy at that floor, or when i is out of range. Neighboring handles are left as-is, so the
  * curve reconnects through them. On an open curve, removing anchor 0 or n-1 can promote a former
  * interior anchor to an endpoint; normalizeOpenEndpoints re-pins both endpoints so the
  * corner/degenerate-handle invariant holds. */
 export function deleteAnchor(bez, i) {
-    if (bez.anchors.length <= minAnchors(bez)) return bez;
     const b = cloneBezier(bez);
-    if (!inRange(b, i)) return b;
+    if (b.anchors.length <= minAnchors(b) || !inRange(b, i)) return b;
     b.anchors.splice(i, 1);
     b.inHandles.splice(i, 1);
     b.outHandles.splice(i, 1);
@@ -337,17 +347,17 @@ export function deleteAnchor(bez, i) {
 
 /*
  * Nearest point on a bezier to `pt`, by sampling each segment, treating the curve as closed or open
- * per `closed`. Returns { seg, t, point:[x,y], dist } (dist is Euclidean in the same space as pt),
- * or null if there are too few anchors. Used to add a point where the curve was clicked. An open
- * curve has no wrap segment, so a point "inside the elbow" of an L is correctly reported far.
+ * per its own `closed` flag. Returns { seg, t, point:[x,y], dist } (dist is Euclidean in the same
+ * space as pt), or null if there are too few anchors. Used to add a point where the curve was
+ * clicked. An open curve has no wrap segment, so a point "inside the elbow" of an L is correctly
+ * reported far.
  */
-function nearestOnCurve(bez, closed, pt, samplesPerSeg) {
-    if (!bez || !bez.anchors || bez.anchors.length < (closed ? 3 : 2)) return null;
-    const n = bez.anchors.length, steps = Math.max(2, samplesPerSeg | 0);
-    const segs = closed ? n : n - 1;
+export function nearestOnBezier(bez, pt, samplesPerSeg = NEAREST_SAMPLES) {
+    if (!hasCurve(bez)) return null;
+    const steps = Math.max(2, samplesPerSeg | 0);
     let best = null;
-    for (let i = 0; i < segs; i++) {
-        const [p0, c1, c2, p3] = segControls(bez, i, closed);
+    for (let i = 0, segs = segCount(bez); i < segs; i++) {
+        const [p0, c1, c2, p3] = segControls(bez, i);
         for (let s = 0; s <= steps; s++) {
             const t = s / steps, q = cubicAt(p0, c1, c2, p3, t);
             const dx = q[0] - pt[0], dy = q[1] - pt[1], d = dx * dx + dy * dy;
@@ -355,13 +365,4 @@ function nearestOnCurve(bez, closed, pt, samplesPerSeg) {
         }
     }
     return best ? { seg: best.seg, t: best.t, point: best.point, dist: Math.sqrt(best.d2) } : null;
-}
-
-export function nearestOnClosedBezier(bez, pt, samplesPerSeg = 24) { return nearestOnCurve(bez, true, pt, samplesPerSeg); }
-
-export function nearestOnOpenBezier(bez, pt, samplesPerSeg = 24) { return nearestOnCurve(bez, false, pt, samplesPerSeg); }
-
-/* Nearest point on any bezier, dispatching on its `closed` flag. */
-export function nearestOnBezier(bez, pt, samplesPerSeg = 24) {
-    return nearestOnCurve(bez, isClosed(bez), pt, samplesPerSeg);
 }

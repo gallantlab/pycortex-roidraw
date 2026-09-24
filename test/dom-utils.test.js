@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isTextEntry } from "../ui/dom-utils.js";
+import { button, isTextEntry } from "../ui/dom-utils.js";
 
 // Plain objects stand in for elements: the predicate reads only tagName/type/isContentEditable.
 test("isTextEntry: text-like inputs, textareas and contenteditable are text entry", () => {
@@ -19,4 +19,22 @@ test("isTextEntry: the Import file input, buttons, checkboxes, sliders, pickers 
     assert.equal(isTextEntry({ tagName: "CANVAS" }), false);
     assert.equal(isTextEntry(null), false);
     assert.equal(isTextEntry(undefined), false);
+});
+
+test("button: a type=button with the label and class, whose click fires the callback", () => {
+    const saved = globalThis.document;
+    globalThis.document = { createElement: (tag) => ({ tagName: tag.toUpperCase() }) };
+    try {
+        let clicks = 0;
+        const b = button("Go", () => clicks++, "roidraw-action");
+        assert.equal(b.tagName, "BUTTON");
+        assert.equal(b.type, "button", "never a submit button");
+        assert.equal(b.textContent, "Go");
+        assert.equal(b.className, "roidraw-action");
+        b.onclick({});
+        assert.equal(clicks, 1);
+        assert.equal(button("Bare", () => {}).className, undefined, "no class unless one is given");
+    } finally {
+        globalThis.document = saved;
+    }
 });

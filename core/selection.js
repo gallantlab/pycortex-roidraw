@@ -5,11 +5,12 @@
  * share a space.
  */
 import { polygonBounds, inBounds, pointInPolygon } from "./geom.js";
+import { HEMIS } from "./hemis.js";
 
 /*
  * projected: { left:  { idx: [subjectIdx...], px: [[x,y]...] },   // in-frustum vertices only
  *              right: { idx: [...],            px: [...] } }
- * lasso:     [[x,y], ...] in the same screen-pixel space as px.
+ * lasso:     [[x,y], ...] in the same space as `px`.
  *
  * Returns { left:[idx...], right:[idx...], px:{left:[[x,y]...], right:[...]}, total }.
  * `px` is kept aligned with the selected indices so the outline builder can snap to them.
@@ -17,7 +18,7 @@ import { polygonBounds, inBounds, pointInPolygon } from "./geom.js";
 export function selectInPolygon(projected, lasso) {
     const bounds = polygonBounds(lasso);
     const out = { left: [], right: [], px: { left: [], right: [] }, total: 0 };
-    for (const h of ["left", "right"]) {
+    for (const h of HEMIS) {
         const p = projected[h];
         if (!p) continue;
         const idx = p.idx, px = p.px;

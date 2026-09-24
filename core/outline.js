@@ -5,7 +5,8 @@
  * Storing the boundary as VERTICES (not screen/flat coords) is what lets the outline follow
  * pan/zoom and the flat<->3D morph: the adapter reprojects these vertices each frame.
  */
-import { simplifyRDP } from "./geom.js";
+import { simplifyRDP, centroid, nearestIndex, dedupeRing } from "./geom.js";
+import { HEMIS } from "./hemis.js";
 
 // RDP tolerance in PIXEL units — removes hand tremor, keeps concave corners. In the SAME units as
 // `lasso`/`sel.px`: the default suits a screen-pixel lasso; a uv-space caller ([0,1]) MUST pass a
@@ -21,45 +22,28 @@ export function buildOutline(lasso, sel, { epsilon = PIXEL_RDP_EPSILON } = {}) {
     let simp = simplifyRDP(lasso, epsilon);
     if (simp.length < 3) simp = lasso;
 
-    const cand = [];
-    for (const h of ["left", "right"]) {
+    const candPts = [], candRefs = [];
+    for (const h of HEMIS) {
         const ids = sel[h], pxs = sel.px[h];
-        for (let k = 0; k < ids.length; k++) cand.push({ h, g: ids[k], x: pxs[k][0], y: pxs[k][1] });
+        for (let k = 0; k < ids.length; k++) { candPts.push(pxs[k]); candRefs.push({ h, g: ids[k] }); }
     }
-    if (!cand.length) return null;
+    if (!candPts.length) return null;
 
-    const ring = [];
-    let prev = null;
-    for (let i = 0; i < simp.length; i++) {
-        const lx = simp[i][0], ly = simp[i][1];
-        let best = null, bd = Infinity;
-        for (let j = 0; j < cand.length; j++) {
-            const dx = cand[j].x - lx, dy = cand[j].y - ly, d = dx * dx + dy * dy;
-            if (d < bd) { bd = d; best = cand[j]; }
-        }
-        if (best && (!prev || prev.h !== best.h || prev.g !== best.g)) {
-            ring.push({ h: best.h, g: best.g });
-            prev = best;
-        }
-    }
-    // drop a duplicated closing vertex if the ring wrapped back to its start
-    if (ring.length > 2 && ring[0].h === ring[ring.length - 1].h && ring[0].g === ring[ring.length - 1].g) ring.pop();
+    // snap each simplified lasso point to its nearest selected vertex, then collapse repeats (and a
+    // ring that wrapped back to its start) so the ring never visits one vertex twice in a row
+    const snapped = simp.map((p) => candRefs[nearestIndex(candPts, p)]);
+    const ring = dedupeRing(snapped, (a, b) => a.h === b.h && a.g === b.g).map((o) => ({ h: o.h, g: o.g }));
     return ring.length >= 3 ? ring : null;
 }
 
-/* Representative vertex for an ROI's label: the selected vertex nearest the selection centroid. */
+/* Representative vertex for an ROI's label: the selected vertex nearest the selection centroid,
+ * in whatever space `sel.px` is in. Returns {h,g} or null for an empty selection. */
 export function pickLabelVertex(sel) {
-    let cx = 0, cy = 0, n = 0;
-    for (const h of ["left", "right"]) for (const p of sel.px[h]) { cx += p[0]; cy += p[1]; n++; }
-    if (!n) return null;
-    cx /= n; cy /= n;
-    let best = null, bd = Infinity;
-    for (const h of ["left", "right"]) {
+    const pts = [], refs = [];
+    for (const h of HEMIS) {
         const ids = sel[h], pxs = sel.px[h];
-        for (let k = 0; k < ids.length; k++) {
-            const dx = pxs[k][0] - cx, dy = pxs[k][1] - cy, d = dx * dx + dy * dy;
-            if (d < bd) { bd = d; best = { h, g: ids[k] }; }
-        }
+        for (let k = 0; k < ids.length; k++) { pts.push(pxs[k]); refs.push({ h, g: ids[k] }); }
     }
-    return best;
+    const c = centroid(pts);
+    return c ? refs[nearestIndex(pts, c)] : null;
 }

@@ -21,3 +21,8 @@ __pycache__/
 
 # baked group viewer (built from the public group viewer + bundle)
 group-viewer-out/
+
+# Claude session notes and planning docs (kept out of this public repo)
+claude-session-memory*.md
+docs/superpowers/
+.superpowers/

@@ -15,6 +15,7 @@
  *     exports are in subject indices so they port across viewers on the same surface.
  *   - "uv": the vertex's flat-overlay texture coordinate in [0,1] (for SVG-overlay path coords).
  */
+import { HEMIS } from "../core/hemis.js";
 
 export class ViewerAdapter {
     /* --- surface identity ------------------------------------------------------------- */
@@ -75,7 +76,11 @@ export class ViewerAdapter {
      */
     setOverlayLayer(_name, _shapes) { throw new Error("ViewerAdapter.setOverlayLayer not implemented"); }
 
-    /** Show/hide the outlines and labels of a previously-created layer. */
+    /**
+     * Show/hide the outlines (`shapes`) and/or labels of the layer; undefined leaves one as is.
+     * The controller draws a single layer, and an adapter may keep just one: PycortexAdapter
+     * replaces its one drawn layer on every setOverlayLayer and ignores `name` here.
+     */
     setLayerVisible(_name, _shapes, _labels) { throw new Error("ViewerAdapter.setLayerVisible not implemented"); }
 
     /* --- camera / transitions --------------------------------------------------------- */
@@ -114,20 +119,49 @@ export class ViewerAdapter {
     /** @returns {DOMRect|null} the host control panel's screen rect, for placing UI beside it. */
     controlPanelRect() { return null; }
 
-    /** Collapse the host's own control panel on startup. */
-    collapseControlPanel() {}
+    /** Collapse the host's own control panel; `closeRoot` also closes its top level. */
+    collapseControlPanel(_closeRoot = true) {}
 
     /** Show/hide the host's control panel when switching Display/Draw modes. */
     setControlPanelVisible(_visible) {}
+
+    /** Apply host-specific startup defaults (e.g. hide built-in layers). Called once on attach. */
+    applyHostDefaults() {}
+
+    /**
+     * Where the whole surface sits in view: its center of mass (world) and the camera radius at
+     * which it fills the viewport. The controller frames the view with it.
+     * @returns {{com:[number,number,number], radius:number}|null} null when it can't be measured.
+     */
+    measureFrame() { return null; }
+
+    /**
+     * Move the camera (and optionally the unfold mix) to a new state, smoothly if the host can.
+     * This default snaps target and radius and ignores `mix` (use flatten() to reach flat).
+     * @param {{target?:[number,number,number], radius?:number, mix?:number}} state
+     */
+    animateCamera({ target, radius } = {}) {
+        if (target) this.setCameraTarget(target);
+        if (radius != null) this.setCameraRadius(radius);
+        this.requestRender();
+    }
+
+    /**
+     * Drawn sulci as SVG markup in the host's overlay coordinate space, for "Export sulci".
+     * @returns {string|null} null when the host can't name that coordinate space (not loaded, or
+     *   not supported); "" when it can but no sulcus yielded a path.
+     */
+    exportSulciMarkup(_sulci) { return null; }
 
     /** Release any host listeners/timers the adapter installed. Called by ROIDrawer.destroy(). */
     destroy() {}
 }
 
 // The methods an implementation MUST provide (every one above that throws). The "optional niceties"
-// — inspectAt/zoom/pan/controlPanelRect/collapseControlPanel/setControlPanelVisible — have working
-// defaults. Declared explicitly (not inferred from the source text) so the conformance test has a
-// stable contract to check against. Keep in sync when adding a required method.
+// — inspectAt/zoom/pan/controlPanelRect/collapseControlPanel/setControlPanelVisible/
+// applyHostDefaults/measureFrame/animateCamera/exportSulciMarkup/destroy — have working defaults.
+// Declared explicitly (not inferred from the source text) so the conformance test has a stable
+// contract to check against. Keep in sync when adding a required method.
 ViewerAdapter.REQUIRED = [
     "surfaceId", "isFlat", "viewportSize", "canvas",
     "projectVertices", "allVertexUV", "vertexUV", "projectVerticesInUvBounds",
@@ -148,7 +182,7 @@ export const ALL_UV_BOUNDS = Object.freeze({ minu: -Infinity, maxu: Infinity, mi
 export function uvPxCorrespondences(adapter, bounds = ALL_UV_BOUNDS) {
     const proj = adapter.projectVerticesInUvBounds(bounds);
     const src = [], dst = [];
-    for (const h of ["left", "right"]) {
+    for (const h of HEMIS) {
         const p = proj[h];
         if (!p) continue;
         for (let i = 0; i < p.uv.length; i++) { src.push(p.uv[i]); dst.push(p.px[i]); }

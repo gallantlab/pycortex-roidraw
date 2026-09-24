@@ -16,8 +16,8 @@ Two kinds of shape, each exported in the format its consumer expects:
   stores sulci.
 
 The whole feature ships as one self-contained script (`dist/roidraw.bundle.js`, CSS included), so
-it can be dropped into **any** pycortex viewer — a static one (like a `make_static` export) or a
-freshly generated/dynamic one.
+it can be dropped into **any** pycortex static viewer — one already built (like a `make_static`
+export) or one generated fresh from your data.
 
 ---
 
@@ -39,12 +39,15 @@ integration.
 ### Or use the helper scripts
 
 ```bash
-# Static viewer (already built): inject in place, non-destructively.
+# Static viewer (already built): inject in place, additively and idempotently.
 python bake.py path/to/viewer_dir            # adds the bundle + the two <script> tags
 
-# Dynamic viewer: generate a fresh pycortex viewer with drawing baked in (example, dummy data).
+# From data: generate a fresh static viewer with make_static, then bake it (example, dummy data).
 .venv/bin/python examples/make_viewer.py
 ```
+
+`bake.py` injects into `index.html` (what `make_static` writes), falling back to `viewer.html`;
+pass `--html NAME` for any other file. Rerunning it refreshes the bundle and leaves the tags alone.
 
 ---
 
@@ -163,7 +166,7 @@ involved.
 > *existing* `#sulci_shapes` group.**
 
 Do **not** paste the whole `<g id="sulci">` layer. `SVGOverlay` keys its layers by
-`inkscape:label`, so a second layer labelled `sulci` silently replaces the subject's own — every
+`inkscape:label`, so a second layer labeled `sulci` silently replaces the subject's own — every
 sulcus already in that file disappears. The downloaded file repeats this warning in an XML comment.
 
 Then `db.get_overlay(subject)` exposes the new curves under `svg.sulci`, and
@@ -180,7 +183,7 @@ Then `db.get_overlay(subject)` exposes the new curves under `svg.sulci`, and
   sulci are display geometry.
 - **The `labels` layer is present and empty, and that is deliberate.** pycortex computes each
   sulcus's label position from its path geometry at load (`Shape.get_labelpos`, one label per path,
-  so a two-hemisphere sulcus is labelled twice for free) and writes `data-ptidx` itself from that
+  so a two-hemisphere sulcus is labeled twice for free) and writes `data-ptidx` itself from that
   position. `data-ptidx` is pycortex's *output*, not its input: a real `overlays.svg` contains zero
   `<text>` elements, and `Labels.__init__` reads `float(text.get('x'))` off every `<text>` it finds,
   so a label carrying only a vertex index would make `db.get_overlay()` raise `TypeError`. The empty
@@ -205,30 +208,36 @@ core/      pure JS — no DOM, no THREE, no host globals (unit-tested under node
   outline.js     polygon → ordered boundary ring of vertices (+ label vertex)
   bezier.js      fit an editable bezier — closed (ROI ring) or open (sulcus trace) — sample it,
                  edit it; owns the segment topology (segCount/segControls/minAnchors) that the
-                 samplers, the editor and the adapter's path writer all read
+                 samplers, the editor and the SVG path writer all read
   transform.js   uv↔px homography (place/grab edit knots; map a traced stroke back to uv)
   shape-model.js the shape collection (ROIs + sulci), default names, the vertexset-v2 ROI export/import
   svg-export.js  pure writer for pycortex overlays.svg sulci markup (paths only, never labels)
+  svg-path.js    bezier / outline ring → SVG path `d` in the overlay's viewBox coordinates
   draw-mode.js   the flat-only Draw state machine (the "reached flat" latch) + the MODE names
-  timer-set.js   tracked setTimeouts that one destroy() cancels (controller + adapter share it)
+  timer-set.js   tracked setTimeouts + retry polls that one clear() cancels (controller + adapter)
+  hemis.js       the hemisphere names, in the order every loop walks them
 
 adapter/   the ViewerAdapter CONTRACT + one host implementation
   viewer-adapter.js     documented interface the core/ui depend on, + uvPxCorrespondences()
                         (the one place projectVerticesInUvBounds is flattened for a homography fit)
-  pycortex-adapter.js   the ONLY file that touches pycortex internals
+  pycortex-adapter.js   projection, camera, host chrome — together with the file below, the
+                        only code that touches pycortex internals
+  pycortex-overlay.js   the "drawn ROIs" layer inside pycortex's SVG overlay (paths, labels,
+                        the layer toggle, the sulci export read-back)
 
 ui/        host-agnostic DOM components (talk only to core + adapter)
   overlay-canvas.js  base class: the transparent canvas over the surface (size/position sync,
                      event→px, teardown) that both overlays below extend
   lasso-overlay.js  bezier-edit-overlay.js  draw-panel.js  mode-toggle.js  roidraw.css
   overlay-geom.js   pure hit-testing math for the edit overlay (no DOM; unit-tested)
-  dom-utils.js      isTextEntry(): the one "is the user typing?" rule every key handler uses
+  dom-utils.js      button() + isTextEntry(): the one "is the user typing?" rule every key handler uses
 
 draw-pipeline.js  ROI: lasso → select → fit bezier → re-derive membership.
                   Sulcus: trace → px→uv via homography → fit open bezier → label vertex
                   (the label is for the live overlay only; the export carries none).
                   (pure; uses core + an adapter)
 index.js          controller wiring core + adapter + ui; exposes window.ROIDraw
+io.js             browser file I/O for export/import (download a text file, read a picked file)
 build.mjs         esbuild → dist/roidraw.bundle.js (CSS inlined)
 ```
 
@@ -236,11 +245,11 @@ build.mjs         esbuild → dist/roidraw.bundle.js (CSS inlined)
 
 Implement [`adapter/viewer-adapter.js`](adapter/viewer-adapter.js) for your viewer
 (`projectVertices`, `allVertexUV`, `vertexUV`, `projectVerticesInUvBounds`, `setOverlayLayer`,
-`flatten`, `setCameraTarget`/`setCameraRadius`, `zoom`/`pan`, `onMixChange`, …) and point
-`index.js` at it. The pure `core/` and `ui/` are
-reused unchanged. Every pycortex-specific quirk (the flat-offset, pivot-matrix refresh, SVG
-viewBox coords, label `data-ptidx` convention, control-panel internals) is quarantined in
-`pycortex-adapter.js`.
+`flatten`, `setCameraTarget`/`setCameraRadius`, `zoom`/`pan`, `onMixChange`, …) and construct it
+in `index.js` in place of `PycortexAdapter`. The pure `core/` and `ui/` are reused unchanged.
+Every pycortex-specific quirk is quarantined in `adapter/`: the flat-offset, pivot-matrix refresh
+and control-panel internals in `pycortex-adapter.js`; the SVG viewBox coords and label `data-ptidx`
+convention in `pycortex-overlay.js`.
 
 ---
 
@@ -262,7 +271,7 @@ The JS suite layers property-based geometry invariants (closed *and* open curves
 state machine, the draw pipeline (driven headless against a synthetic-surface adapter), the pure
 `overlays.svg` writer, the edit-overlay hit-testing, the bezier segment-topology agreement between
 the samplers/editor/adapter path writer, an adapter-contract guard, a host preflight, and a smoke
-test of the built bundle. CI (`.github/workflows/test.yml`) runs it on every push. See
+test of the built bundle. CI (`.github/workflows/test.yml`) runs it on every push and pull request to `main`. See
 [TESTING.md](TESTING.md) for what each layer guarantees — and the gaps (live-browser integration)
 it can't.
 
@@ -272,8 +281,10 @@ it can't.
   functions and variables, `UPPER_SNAKE` for module constants, a leading `_` for private methods
   and for deliberately unused parameters. A file starts with a block comment saying what it owns
   and what it must not know about. `npm run lint` enforces the mechanical part.
-- **Python** (`bake.py`, `examples/`, `test/test_*.py`): PEP 8, stdlib only, `unittest`, the same
-  4-space/snake_case conventions as pycortex itself.
+- **Python** (`bake.py`, `upstream/`, `examples/`, `test/test_*.py`): PEP 8, `unittest`, the same
+  4-space/snake_case conventions as pycortex itself. `bake.py`, `upstream/stage_into_pycortex.py`
+  and `test/test_*.py` are stdlib only; `examples/` and `upstream/test_webgl_roidraw.py` (which
+  runs in pycortex's CI) need pycortex.
 - **One definition per rule.** Anything two code paths must agree on — the bezier's segment
   topology, the overlay's coordinate mapping, the "is the user typing?" test, default shape names,
   the timer bookkeeping — lives in exactly one module and is imported from there (see the
@@ -281,9 +292,10 @@ it can't.
 
 ## Requirements
 
-- **Node** ≥ 18 to build/test the JS.
-- **Python 3** for `bake.py` (stdlib only). The dynamic example
-  (`examples/make_viewer.py`) additionally needs **pycortex** (Python ≤ 3.12) in `.venv`.
+- **Node** ≥ 20.19 to build/test the JS (eslint 10's floor).
+- **Python 3** for `bake.py`, `upstream/stage_into_pycortex.py` and the `test/test_*.py` suite, all
+  stdlib only. The example (`examples/make_viewer.py`) additionally needs **pycortex**
+  (Python ≤ 3.12) in `.venv`.
 
 ## Upstreaming into pycortex
 
@@ -296,15 +308,15 @@ npm run build
 python upstream/stage_into_pycortex.py /path/to/pycortex   # on a branch; `git diff` = the PR
 ```
 
-That stages four things, modeled line-for-line on pycortex's merged pattern for optional webgl
-features (the guided-tour PR, [#660](https://github.com/gallantlab/pycortex/pull/660)):
+That stages four things, modeled line-for-line on the pattern the guided-tour PR
+([#660](https://github.com/gallantlab/pycortex/pull/660)) uses for an optional webgl feature:
 
 | In pycortex | What |
 | --- | --- |
 | `cortex/webgl/resources/js/roidraw.js` | the built bundle, global `roidraw` (lowercase, like `mriview`/`svgoverlay`) |
 | `cortex/webgl/template.html` | a `{% if roidraw %}` block: the script tag + the same one-line `window.ROIDraw.autoAttach()` bootstrap `bake.py` injects |
 | `cortex/webgl/view.py` | `make_static(..., roidraw=False)` — kwarg, docstring, template flag |
-| `cortex/tests/test_webgl_roidraw.py` | renders the template with the flag on/off (mirrors `test_webgl_tour.py`) |
+| `cortex/tests/test_webgl_roidraw.py` | renders the template with the flag on/off (mirrors the tour PR's `test_webgl_tour.py`) |
 
 Then `cortex.webgl.make_static(outpath, data, roidraw=True)` bakes drawing into any static viewer.
 
@@ -316,7 +328,8 @@ Deliberate choices, for pycortex compatibility:
   regex-rewrites `new Worker(...)` / `attr('src', ...)` inside every embedded script — the bundle
   contains neither pattern, and `test/test_upstream.py` pins that it never grows one.
 - The staging script's patches are **transactional and loud**: if pycortex drifts and an anchor
-  goes missing or ambiguous, nothing is written and the error names the anchor.
+  goes missing or ambiguous, or a file is only partly staged, nothing is written and the error
+  names what is wrong.
 - The roidraw **source** stays modular ES (this repo's tests depend on it); what pycortex receives
   is the single script-tag-ready file its viewers load, like every other `resources/js/*.js`.
 

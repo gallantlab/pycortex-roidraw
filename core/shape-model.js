@@ -13,16 +13,15 @@
  * same surface. `outline`/`labelVert` reconstruct the boundary + label; `bezier` is the editable
  * smooth boundary in flat-UV space (see core/bezier.js) — vertices are DERIVED from it, so the
  * bezier is the source of truth when an ROI is reloaded and re-edited. The bezier descriptor
- * ({anchors, inHandles, outHandles, smooth}) is written/read verbatim, so its explicit tangent
- * handles and per-anchor smooth flags round-trip for free; a `bezier` from an earlier build simply
- * lacks `smooth` and is treated as all-smooth on edit (the format stays vertexset-v2 — additive).
- *
- * `bezier` is null for ROIs (or v1 files) drawn before this feature; the importer back-fills one.
+ * ({closed, anchors, inHandles, outHandles, smooth}) is written/read verbatim, so its explicit
+ * tangent handles and per-anchor smooth flags round-trip. A reader must accept a bezier without
+ * `closed` or `smooth` (cloneBezier supplies the defaults) and an ROI with no bezier at all (a v1
+ * file, or a v2 entry that never had one); the viewer back-fills the latter from its outline.
  *
  * The vertexset-v2 document is an ROI format only: it describes per-hemisphere vertex membership,
  * which a sulcus does not have. toJSON therefore serializes ROIs only, and loadJSON tags every
- * imported entry kind:"roi" (a vertexset document only ever holds ROIs). Sulci are exported
- * separately, as pycortex's own overlays.svg markup — see core/svg-export.js.
+ * imported entry kind:"roi". Sulci are exported separately, as pycortex's own overlays.svg markup
+ * — see core/svg-export.js.
  */
 
 export const FORMAT = "pycortex-roidraw/vertexset-v2";
@@ -35,25 +34,30 @@ export class ShapeSet {
         this.nextId = 1;
     }
 
-    get length() { return this.shapes.length; }
+    /* The shape with this id, or undefined. */
+    get(id) { return this.shapes.find((s) => s.id === id); }
 
     byKind(kind) { return this.shapes.filter((s) => s.kind === kind); }
 
     nextColor() { return PALETTE[(this.nextId - 1) % PALETTE.length]; }
 
     /* The name offered for a new shape of `kind` when the user (or an imported file) gives none:
-     * "roi3" for the third ROI, "sulcus1" for the first sulcus. Counts shapes of that kind, not
-     * ids, so sulci don't skip the ROI numbering. One rule for the prompt default and the import
-     * fallback alike. */
-    defaultName(kind) { return kind + (this.byKind(kind).length + 1); }
+     * "roi3" for the third ROI, "sulcus1" for the first sulcus — numbered per kind, so sulci don't
+     * skip the ROI numbering. The number starts at count+1 and steps past any name already in use
+     * (after deleting sulcus1 of two, the next is "sulcus3", not a second "sulcus2" — svg-export
+     * would merge two same-named sulci). One rule for the prompt default and the import fallback. */
+    defaultName(kind) {
+        const taken = new Set(this.shapes.map((s) => s.name));
+        let k = this.byKind(kind).length + 1;
+        while (taken.has(kind + k)) k++;
+        return kind + k;
+    }
 
     /* An ROI carries membership (left/right/outline); a sulcus carries only its open bezier and a
-     * label vertex. Vertex fields are omitted entirely for sulci rather than set to empty arrays,
-     * so a downstream reader can't mistake "no membership" for "membership of nothing". */
+     * label vertex (see the module header for why its vertex fields are absent, not empty). */
     add({ kind = "roi", name, color, left = [], right = [], outline = null, labelVert = null, bezier = null }) {
         const shape = { id: this.nextId++, kind, name, color: color || this.nextColor(), labelVert, bezier };
-        // An ROI always HAS the membership fields (possibly empty); a sulcus never does. Callers
-        // read `roi.left.length` unguarded, so default them rather than let `undefined` through.
+        // callers read `roi.left.length` unguarded, so an ROI's fields default to empty
         if (kind === "roi") { shape.left = left; shape.right = right; shape.outline = outline; }
         this.shapes.push(shape);
         return shape;
@@ -63,8 +67,7 @@ export class ShapeSet {
 
     clear() { this.shapes = []; }
 
-    /* The vertexset-v2 document is an ROI format: it describes per-hemisphere vertex membership,
-     * which a sulcus does not have. Unchanged from v2 on purpose; v1/v2 files keep importing. */
+    /* Serialize the ROIs as a vertexset-v2 document (sulci are not part of it — see the header). */
     toJSON(surfaceId) {
         return {
             format: FORMAT,
@@ -84,12 +87,12 @@ export class ShapeSet {
         };
     }
 
-    /* Append ROIs from a parsed document. A vertexset document only ever holds ROIs, so every
-     * entry is tagged kind:"roi". Returns the shapes added. Throws on an unknown format.
+    /* Append ROIs from a parsed vertexset document (v1 or v2), each tagged kind:"roi". Returns the
+     * shapes added. Throws on an unknown format.
      * Purely structural, and DEEPLY copied: the model never aliases the caller's parsed JSON, so a
      * later edit (which mutates a shape's bezier in place) can't reach back into it. A missing
-     * labelVert is left null — the viewer back-fills it from geometry (see draw-pipeline's
-     * backfillLabel), so reloaded ROIs label the same way freshly drawn ones do. */
+     * labelVert or bezier is left null — the viewer back-fills both from geometry (see
+     * draw-pipeline's backfillImported). */
     loadJSON(doc) {
         if (!doc || !doc.format || !String(doc.format).startsWith("pycortex-roidraw"))
             throw new Error("unrecognized format: " + (doc && doc.format));
@@ -114,12 +117,16 @@ export class ShapeSet {
 
 const copyVert = (o) => (o ? { h: o.h, g: o.g } : null);
 const copyRing = (ring) => (Array.isArray(ring) ? ring.map(copyVert) : null);
-const copyPts = (pts) => (Array.isArray(pts) ? pts.map((p) => [p[0], p[1]]) : []);
+const copyPts = (pts) => pts.map((p) => [p[0], p[1]]);
 
-/* Copy a bezier descriptor verbatim (including a `closed` flag or `smooth[]` an older file lacks —
- * cloneBezier back-fills those on the first edit). Returns null for anything that isn't one. */
+/* Copy a bezier descriptor verbatim; a missing `closed` flag or `smooth[]` stays missing
+ * (cloneBezier supplies the defaults on the first edit). Returns null for anything that isn't a
+ * usable bezier — including one whose handle arrays are missing or don't pair one-to-one with its
+ * anchors, which would crash the sampler — so the importer re-fits the curve from the outline. */
 function copyBezier(bez) {
-    if (!bez || !Array.isArray(bez.anchors)) return null;
+    if (!bez || !Array.isArray(bez.anchors) || !Array.isArray(bez.inHandles) || !Array.isArray(bez.outHandles)) return null;
+    const n = bez.anchors.length;
+    if (bez.inHandles.length !== n || bez.outHandles.length !== n) return null;
     const out = {
         anchors: copyPts(bez.anchors),
         inHandles: copyPts(bez.inHandles),

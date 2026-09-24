@@ -12,6 +12,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const bundlePath = fileURLToPath(new URL("../dist/roidraw.bundle.js", import.meta.url));
+const cssPath = fileURLToPath(new URL("../ui/roidraw.css", import.meta.url));
 
 test("the bundle was built", () => {
     assert.ok(existsSync(bundlePath), "dist/roidraw.bundle.js missing — run `npm run build`");
@@ -48,6 +49,11 @@ test("the bundle loads in a browser-like sandbox and exposes window.ROIDraw", ()
 
 test("the bundle inlines its CSS (single self-contained file, no external fetch)", () => {
     const code = readFileSync(bundlePath, "utf8");
-    // roidraw.css ships inlined as a string; a marker class proves it was bundled, not left external.
-    assert.ok(code.includes("roidraw"), "expected inlined roidraw styles/markers in the bundle");
+    // roidraw.css ships inlined as a string. A rule's selector followed by its `{` appears only in
+    // the stylesheet (the JS names classes without the dot and brace), so finding the file's first
+    // rule in the bundle proves the CSS was bundled, not left external.
+    const css = readFileSync(cssPath, "utf8");
+    const rule = /^(\.[\w-][^{\n]*\{)/m.exec(css);
+    assert.ok(rule, "ui/roidraw.css has no class rule to look for");
+    assert.ok(code.includes(rule[1]), `expected the inlined rule "${rule[1]}" in the bundle`);
 });

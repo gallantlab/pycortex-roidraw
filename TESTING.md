@@ -48,24 +48,6 @@ tests pin that the restatements are gone:
 every keyboard handler (controller Shift/Esc and the editor's Delete): a file input, button,
 checkbox or slider holding focus must not swallow a gesture.
 
-### Upstream staging — unit (pure patch functions) + embed-safety guards
-`upstream/stage_into_pycortex.py` generates the pycortex incorporation PR's diff.
-`test/test_upstream.py` drives its pure patch functions against verbatim fixtures of the pycortex
-anchor regions: the template block lands between the `python_interface` block and
-`{% block javascripts %}`; the `view.py` kwarg/docstring/generate-arg insertions land in order and
-only in `make_static` (both the docstring and the `tpl.generate` anchors appear twice in the real
-file — the fixtures reproduce that, and the tests assert the twins come through byte-for-byte);
-reruns are no-ops; a missing anchor, a partly staged file, or a stray `roidraw` exits loudly.
-`stage()` itself is driven against a throwaway fake checkout: it stages all four files, a rerun
-writes nothing, and both a drifted `view.py` and a missing `cortex/tests/` exit loudly with every
-file in the checkout unchanged. It also pins that the built bundle stays free of the two patterns
-`cortex/webgl/htmlembed.py` rewrites inside every embedded script (`new Worker(`,
-`attr('src', …)`) — the reason the CSS rides inside the JS is the same module's non-nesting CSS
-brace parser (skipped, not failed, when `dist/` has not been built). The shipped
-`upstream/test_webgl_roidraw.py` needs an importable `cortex`, so it runs in pycortex's CI, not
-here; its exact assertions were reproduced against the real patched template with Tornado
-(pycortex's template engine) when the kit was built.
-
 ### Static-viewer bake — unit
 `test/test_bake.py` pins `bake.py`: the two tags go before the *last* `</body>` (then the last
 `</html>`, then the end of a closing-tag-free `make_static` fragment), so a closing-tag literal

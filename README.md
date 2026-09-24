@@ -281,10 +281,9 @@ it can't.
   functions and variables, `UPPER_SNAKE` for module constants, a leading `_` for private methods
   and for deliberately unused parameters. A file starts with a block comment saying what it owns
   and what it must not know about. `npm run lint` enforces the mechanical part.
-- **Python** (`bake.py`, `upstream/`, `examples/`, `test/test_*.py`): PEP 8, `unittest`, the same
-  4-space/snake_case conventions as pycortex itself. `bake.py`, `upstream/stage_into_pycortex.py`
-  and `test/test_*.py` are stdlib only; `examples/` and `upstream/test_webgl_roidraw.py` (which
-  runs in pycortex's CI) need pycortex.
+- **Python** (`bake.py`, `examples/`, `test/test_*.py`): PEP 8, `unittest`, the same
+  4-space/snake_case conventions as pycortex itself. `bake.py` and `test/test_*.py` are stdlib
+  only; `examples/` needs pycortex.
 - **One definition per rule.** Anything two code paths must agree on — the bezier's segment
   topology, the overlay's coordinate mapping, the "is the user typing?" test, default shape names,
   the timer bookkeeping — lives in exactly one module and is imported from there (see the
@@ -293,45 +292,8 @@ it can't.
 ## Requirements
 
 - **Node** ≥ 20.19 to build/test the JS (eslint 10's floor).
-- **Python 3** for `bake.py`, `upstream/stage_into_pycortex.py` and the `test/test_*.py` suite, all
-  stdlib only. The example (`examples/make_viewer.py`) additionally needs **pycortex**
+- **Python 3** for `bake.py` and the `test/test_*.py` suite, both stdlib only. The example (`examples/make_viewer.py`) additionally needs **pycortex**
   (Python ≤ 3.12) in `.venv`.
-
-## Upstreaming into pycortex
-
-This repo is written to be **incorporated into pycortex itself** (proposed in
-[gallantlab/pycortex#642](https://github.com/gallantlab/pycortex/pull/642)) with a diff that reads
-native there. The whole PR is generated mechanically:
-
-```bash
-npm run build
-python upstream/stage_into_pycortex.py /path/to/pycortex   # on a branch; `git diff` = the PR
-```
-
-That stages four things, modeled line-for-line on the pattern the guided-tour PR
-([#660](https://github.com/gallantlab/pycortex/pull/660)) uses for an optional webgl feature:
-
-| In pycortex | What |
-| --- | --- |
-| `cortex/webgl/resources/js/roidraw.js` | the built bundle, global `roidraw` (lowercase, like `mriview`/`svgoverlay`) |
-| `cortex/webgl/template.html` | a `{% if roidraw %}` block: the script tag + the same one-line `window.ROIDraw.autoAttach()` bootstrap `bake.py` injects |
-| `cortex/webgl/view.py` | `make_static(..., roidraw=False)` — kwarg, docstring, template flag |
-| `cortex/tests/test_webgl_roidraw.py` | renders the template with the flag on/off (mirrors the tour PR's `test_webgl_tour.py`) |
-
-Then `cortex.webgl.make_static(outpath, data, roidraw=True)` bakes drawing into any static viewer.
-
-Deliberate choices, for pycortex compatibility:
-
-- **One self-contained file, CSS inside the JS.** pycortex's `html_embed` pipeline
-  (`cortex/webgl/htmlembed.py`) parses stylesheets with a non-nesting brace regex, so a separate
-  `roidraw.css` could be silently mangled the moment it grew a nested at-rule; and `_embed_js`
-  regex-rewrites `new Worker(...)` / `attr('src', ...)` inside every embedded script — the bundle
-  contains neither pattern, and `test/test_upstream.py` pins that it never grows one.
-- The staging script's patches are **transactional and loud**: if pycortex drifts and an anchor
-  goes missing or ambiguous, or a file is only partly staged, nothing is written and the error
-  names what is wrong.
-- The roidraw **source** stays modular ES (this repo's tests depend on it); what pycortex receives
-  is the single script-tag-ready file its viewers load, like every other `resources/js/*.js`.
 
 ## Not here
 

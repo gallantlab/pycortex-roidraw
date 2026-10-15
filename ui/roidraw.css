@@ -20,6 +20,7 @@
 .roidraw-edit-overlay--active { pointer-events: auto; outline: 2px dashed rgba(57, 208, 255, 0.85); }
 /* Cursor states: CanvasOverlay sets at most one of these at a time. */
 .roidraw-overlay--draw { cursor: crosshair; }
+.roidraw-pointpick { cursor: crosshair; }
 .roidraw-overlay--grab { cursor: grab; }
 .roidraw-overlay--grabbing { cursor: grabbing; }
 
@@ -52,7 +53,9 @@
     background: #2a2a2a; color: #ddd; border: 1px solid #444;
 }
 .roidraw-tools__btn:first-child { border-radius: 3px 0 0 3px; }
-.roidraw-tools__btn:last-child { border-radius: 0 3px 3px 0; border-left: none; }
+.roidraw-tools__btn:last-child { border-radius: 0 3px 3px 0; }
+.roidraw-tools__btn + .roidraw-tools__btn { border-left: none; }
+.roidraw-tools__btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .roidraw-tools__btn--on { background: #ffcc00; color: #111; border-color: #ffcc00; }
 
 /* a full-width panel action (Export, Clear, Done editing) */

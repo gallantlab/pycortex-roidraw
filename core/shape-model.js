@@ -1,13 +1,15 @@
 /*
- * shape-model.js — the shape collection (ROIs + sulci) + the portable export/import format. Pure
- * (no DOM).
+ * shape-model.js — the shape collection (ROIs + sulci + points) + the portable export/import
+ * formats. Pure (no DOM).
  *
- * Every shape has a `kind`: "roi" or "sulcus". An ROI is
+ * Every shape has a `kind`: "roi", "sulcus" or "point". An ROI is
  * { id, kind:"roi", name, color, left:[subjectIdx], right:[subjectIdx], outline:[{h,g}],
  *   labelVert:{h,g}, bezier }. A sulcus is display geometry only — pycortex stores no vertex
  * membership for sulci (there is no get_sulci_verts) — so a sulcus OMITS left/right/outline
  * entirely rather than setting them to empty arrays: a reader must not be able to mistake "no
- * membership" for "membership of nothing".
+ * membership" for "membership of nothing". A point is { id, kind:"point", name, color, vert:{h,g},
+ * xyz } — one vertex of the viewer's mesh, plus that vertex's base-surface position. It has no
+ * bezier and no membership either.
  *
  * The serialized form references SUBJECT vertex indices, so it ports to any viewer built on the
  * same surface. `outline`/`labelVert` reconstruct the boundary + label; `bezier` is the editable
@@ -22,9 +24,20 @@
  * which a sulcus does not have. toJSON therefore serializes ROIs only, and loadJSON tags every
  * imported entry kind:"roi". Sulci are exported separately, as pycortex's own overlays.svg markup
  * — see core/svg-export.js.
+ *
+ * Points have their own document, points-v1 (toPointsJSON / loadJSON). A point's `g` is the vertex
+ * index in the VIEWER's mesh order, which is not the subject's order: pycortex's mg2 CTM compression
+ * reorders vertices, and the map back (pycortex's cortex.utils.get_ctmmap) needs the pycortex
+ * database, which a static viewer doesn't ship. So the document names it `viewerVertex`, and
+ * carries `xyz`, the vertex's base-surface position — a reader resolves the subject vertex from
+ * either. It re-imports exactly into any viewer built from the same CTM cache (the controller checks
+ * xyz against the mesh on import). loadJSON reads both documents.
  */
 
+import { isHemi } from "./hemis.js";
+
 export const FORMAT = "pycortex-roidraw/vertexset-v2";
+export const POINTS_FORMAT = "pycortex-roidraw/points-v1";
 
 const PALETTE = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6", "#bcf60c"];
 
@@ -54,8 +67,16 @@ export class ShapeSet {
     }
 
     /* An ROI carries membership (left/right/outline); a sulcus carries only its open bezier and a
-     * label vertex (see the module header for why its vertex fields are absent, not empty). */
-    add({ kind = "roi", name, color, left = [], right = [], outline = null, labelVert = null, bezier = null }) {
+     * label vertex (see the module header for why its vertex fields are absent, not empty); a point
+     * carries its one vertex (`vert`) and that vertex's position (`xyz`, or null). */
+    add({ kind = "roi", name, color, left = [], right = [], outline = null, labelVert = null, bezier = null,
+          vert = null, xyz = null }) {
+        if (kind === "point") {
+            const shape = { id: this.nextId++, kind, name, color: color || this.nextColor(),
+                vert: copyVert(vert), xyz: copyXyz(xyz), bezier: null };
+            this.shapes.push(shape);
+            return shape;
+        }
         const shape = { id: this.nextId++, kind, name, color: color || this.nextColor(), labelVert, bezier };
         // callers read `roi.left.length` unguarded, so an ROI's fields default to empty
         if (kind === "roi") { shape.left = left; shape.right = right; shape.outline = outline; }
@@ -87,13 +108,58 @@ export class ShapeSet {
         };
     }
 
+    /* Serialize the points as a points-v1 document: `hemi` + `viewerVertex` (viewer mesh order — see
+     * the header) and `xyz`, the vertex's base-surface position (null if unknown). */
+    toPointsJSON(surfaceId) {
+        return {
+            format: POINTS_FORMAT,
+            generated: new Date().toISOString(),
+            surface: surfaceId || null,
+            note: "One vertex per point. viewerVertex is the per-hemisphere index in the viewer's CTM " +
+                  "mesh order (pycortex mg2 reorders vertices); map it with cortex.utils.get_ctmmap" +
+                  "(subject, method='mg2', level=9): subject vertex = ctm2fs_<hemi>[viewerVertex]. " +
+                  "xyz is the vertex's base-surface position in the subject's surface coordinates.",
+            points: this.byKind("point").map((p) => ({
+                name: p.name,
+                color: p.color,
+                hemi: p.vert.h,
+                viewerVertex: p.vert.g,
+                xyz: p.xyz || null,
+            })),
+        };
+    }
+
+    /* Append the shapes of a parsed document: ROIs from a vertexset (v1 or v2), or points from a
+     * points-v1 document. Returns the shapes added. Throws on an unknown format. */
+    loadJSON(doc) {
+        if (doc && doc.format === POINTS_FORMAT) return this._loadPoints(doc);
+        return this._loadRois(doc);
+    }
+
+    /* Points: each needs a hemi ("left"/"right") and a non-negative integer viewerVertex; an entry
+     * without one is skipped rather than guessed at. */
+    _loadPoints(doc) {
+        const added = [];
+        for (const p of (doc.points || [])) {
+            if (!p || !isHemi(p.hemi) || !Number.isInteger(p.viewerVertex) || p.viewerVertex < 0) continue;
+            added.push(this.add({
+                kind: "point",
+                name: p.name || this.defaultName("point"),
+                color: p.color,
+                vert: { h: p.hemi, g: p.viewerVertex },
+                xyz: p.xyz,
+            }));
+        }
+        return added;
+    }
+
     /* Append ROIs from a parsed vertexset document (v1 or v2), each tagged kind:"roi". Returns the
      * shapes added. Throws on an unknown format.
      * Purely structural, and DEEPLY copied: the model never aliases the caller's parsed JSON, so a
      * later edit (which mutates a shape's bezier in place) can't reach back into it. A missing
      * labelVert or bezier is left null — the viewer back-fills both from geometry (see
      * draw-pipeline's backfillImported). */
-    loadJSON(doc) {
+    _loadRois(doc) {
         if (!doc || !doc.format || !String(doc.format).startsWith("pycortex-roidraw"))
             throw new Error("unrecognized format: " + (doc && doc.format));
         const added = [];
@@ -113,11 +179,18 @@ export class ShapeSet {
     }
 }
 
-/* --- deep copies of the three structured fields a vertexset document carries ------------------ */
+/* --- deep copies of the structured fields the documents carry --------------------------------- */
 
 const copyVert = (o) => (o ? { h: o.h, g: o.g } : null);
 const copyRing = (ring) => (Array.isArray(ring) ? ring.map(copyVert) : null);
 const copyPts = (pts) => pts.map((p) => [p[0], p[1]]);
+const copyXyz = (p) => (Array.isArray(p) && p.length === 3 && p.every(Number.isFinite) ? [p[0], p[1], p[2]] : null);
+
+/* "left vertex 94268 (-32.4, 33.6, 34.0)": the one description of a point's location, for the panel
+ * and the controller's messages. */
+export function describePoint(vert, xyz) {
+    return vert.h + " vertex " + vert.g + (xyz ? " (" + xyz.map((c) => c.toFixed(1)).join(", ") + ")" : "");
+}
 
 /* Copy a bezier descriptor verbatim; a missing `closed` flag or `smooth[]` stays missing
  * (cloneBezier supplies the defaults on the first edit). Returns null for anything that isn't a

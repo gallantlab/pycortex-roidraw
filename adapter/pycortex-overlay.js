@@ -203,7 +203,7 @@ export class PycortexOverlay {
             const w = this._a.surface.width || vp.width || FALLBACK_TEX_W;
             const h = this._a.surface.height || vp.height || FALLBACK_TEX_H;
             labels.shader.uniforms.scale.value.set(1 / w, 1 / h);
-            labels.setMix({ mix: this._a._currentMix(), thickmix: this._thickmix });
+            labels.setMix({ mix: this._a.currentMix(), thickmix: this._thickmix });
             svgo.labels.left.add(labels.meshes.left);
             svgo.labels.right.add(labels.meshes.right);
             return labels;

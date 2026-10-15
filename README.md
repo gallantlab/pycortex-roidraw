@@ -56,23 +56,30 @@ pass `--html NAME` for any other file. Rerunning it refreshes the bundle and lea
 A **Display / Draw** toggle sits at the top of the viewer.
 
 - **Display** — the normal pycortex viewer + control panel.
-- **Draw** — the brain flattens and the draw panel appears. Drawing is **flat-only**: inflating the
-  surface (the unfold slider) returns you to Display.
+- **Draw** — the draw panel appears. ROI and sulcus drawing is **flat-only**: with those tools the
+  brain flattens, and inflating the surface (the unfold slider) returns you to Display. The
+  **Point** tool works at any unfold, folded or inflated, and leaves the view where it is.
 
-At the top of the panel a **`ROI` / `Sulcus`** selector picks what a plain drag draws:
+At the top of the panel a **`ROI` / `Sulcus` / `Point`** selector picks what the pointer draws:
 
 | Gesture | Action |
 | --- | --- |
 | Drag, with **ROI** selected | Lasso a region → name it → fitted to a smooth *closed* bezier and drawn onto the surface |
 | Drag, with **Sulcus** selected | Trace along the sulcus → name it → fitted to a smooth *open* bezier |
+| Click, with **Point** selected | Mark the vertex under the cursor → name it (a drag still rotates the brain) |
 | Scroll wheel | Zoom (to draw fine detail) |
 | **Shift** + drag | Pan the surface |
 | **Shift** + click | Inspect the voxel under the cursor |
 | `Esc` | Cancel the current stroke (or finish editing) |
 
-The panel lists everything drawn — a glyph marks each row's kind (**◯** ROI, **∿** sulcus), and the
-count column shows enclosed vertices for an ROI, anchors for a sulcus. Below the list sit
-**Export ROIs (JSON)** / **Export sulci (SVG)** / **Import** / **Clear all**. Everything drawn lives
+The panel lists everything drawn — a glyph marks each row's kind (**◯** ROI, **∿** sulcus,
+**◉** point), and the count column shows enclosed vertices for an ROI, anchors for a sulcus, and
+hemisphere + vertex for a point (**✎ move** re-places a point with the next click). Below the list
+sit **Export ROIs (JSON)** / **Export sulci (SVG)** / **Export points (JSON)** / **Import** /
+**Clear all**.
+
+A viewer **without a flatmap** (e.g. a `make_static` of a subject with only fiducial + inflated
+surfaces) still gets the tool: ROI and Sulcus are disabled there, and Point is selected. Everything drawn lives
 in one toggleable overlay layer (Surface → overlays → "drawn ROIs") alongside the built-in
 rois/sulci.
 
@@ -106,9 +113,35 @@ has no membership to re-derive; its label instead follows the curve's midpoint. 
 bezier get one fitted from their boundary ring on import, and a freshly fit curve starts fully
 smooth.
 
+### Vertex indices
+
+Every export names vertices by the index the **viewer** uses. pycortex's default `mg2` CTM
+compression **reorders vertices**, so for a `make_static` viewer these are *not* the subject's
+FreeSurfer/pycortex vertex indices. Map them with pycortex itself:
+`ctm2fs_left, ctm2fs_right = cortex.utils.get_ctmmap(subject, method="mg2", level=9)`, then
+`subject_vertex = ctm2fs_left[i]` (left) or `ctm2fs_right[i]` (right). Files re-import exactly into
+any viewer built from the same CTM cache.
+
+### Point export format — `points.json`
+
+```jsonc
+{
+  "format": "pycortex-roidraw/points-v1",
+  "surface": "mni152",
+  "points": [
+    { "name": "VWFA", "color": "#e6194b", "hemi": "left", "viewerVertex": 94268,
+      "xyz": [-32.4, 33.6, 34.0] } ]
+}
+```
+
+`viewerVertex` is the per-hemisphere index in the viewer's mesh order (see *Vertex indices*);
+`xyz` is that vertex's base-surface position. On import each point's `xyz` is checked against this
+viewer's mesh: a point whose vertex is missing or elsewhere (another subject, another CTM build) is
+dropped and reported, never drawn at the wrong place.
+
 ### ROI export format — `rois.json`
 
-Per-hemisphere **subject** vertex indices, an ordered boundary ring, a label vertex,
+Per-hemisphere vertex indices (viewer order — see *Vertex indices*), an ordered boundary ring, a label vertex,
 and the editable **bezier** (control points in view-independent flat-UV `[0,1]`). It re-imports
 (here or in any viewer on the same surface) to the exact same outline, ready to re-edit:
 
@@ -210,25 +243,30 @@ core/      pure JS — no DOM, no THREE, no host globals (unit-tested under node
                  edit it; owns the segment topology (segCount/segControls/minAnchors) that the
                  samplers, the editor and the SVG path writer all read
   transform.js   uv↔px homography (place/grab edit knots; map a traced stroke back to uv)
-  shape-model.js the shape collection (ROIs + sulci), default names, the vertexset-v2 ROI export/import
+  shape-model.js the shape collection (ROIs + sulci + points), default names, the vertexset-v2 ROI
+                 and points-v1 export/import
   svg-export.js  pure writer for pycortex overlays.svg sulci markup (paths only, never labels)
   svg-path.js    bezier / outline ring → SVG path `d` in the overlay's viewBox coordinates
-  draw-mode.js   the flat-only Draw state machine (the "reached flat" latch) + the MODE names
+  draw-mode.js   the Draw state machine (the "reached flat" latch, flat-only for the ROI/sulcus tools)
+                 + the MODE and TOOL names
   timer-set.js   tracked setTimeouts + retry polls that one clear() cancels (controller + adapter)
-  hemis.js       the hemisphere names, in the order every loop walks them
+  hemis.js       the hemisphere names, in the order every loop walks them, + isHemi()
 
 adapter/   the ViewerAdapter CONTRACT + one host implementation
   viewer-adapter.js     documented interface the core/ui depend on, + uvPxCorrespondences()
                         (the one place projectVerticesInUvBounds is flattened for a homography fit)
-  pycortex-adapter.js   projection, camera, host chrome — together with the file below, the
+  pycortex-adapter.js   projection, camera, host chrome — together with the two files below, the
                         only code that touches pycortex internals
   pycortex-overlay.js   the "drawn ROIs" layer inside pycortex's SVG overlay (paths, labels,
                         the layer toggle, the sulci export read-back)
+  pycortex-points.js    drawn points: the side-effect-free vertex pick + one marker per point in
+                        the picker's marker groups (works without a flatmap)
 
 ui/        host-agnostic DOM components (talk only to core + adapter)
   overlay-canvas.js  base class: the transparent canvas over the surface (size/position sync,
                      event→px, teardown) that both overlays below extend
   lasso-overlay.js  bezier-edit-overlay.js  draw-panel.js  mode-toggle.js  roidraw.css
+  point-picker.js   the Point tool's click listener on the surface canvas (no overlay; drags rotate)
   overlay-geom.js   pure hit-testing math for the edit overlay (no DOM; unit-tested)
   dom-utils.js      button() + isTextEntry(): the one "is the user typing?" rule every key handler uses
 

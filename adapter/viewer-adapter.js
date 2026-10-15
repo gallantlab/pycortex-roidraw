@@ -11,8 +11,11 @@
  *
  * Coordinate conventions:
  *   - "screen px": CSS pixels relative to the surface canvas's top-left (what the lasso uses).
- *   - "subject index" (g): the surface's canonical per-hemisphere vertex index. Selections and
- *     exports are in subject indices so they port across viewers on the same surface.
+ *   - "vertex index" (g): the per-hemisphere vertex index as the host numbers its mesh. Selections
+ *     and exports are in these indices. For pycortex this is the CTM file's order, which equals the
+ *     subject's order only for a "raw" CTM: the default mg2 compression reorders vertices, and the
+ *     map back is pycortex's cortex.utils.get_ctmmap. Exports port exactly to viewers built from the
+ *     same CTM cache.
  *   - "uv": the vertex's flat-overlay texture coordinate in [0,1] (for SVG-overlay path coords).
  */
 import { HEMIS } from "../core/hemis.js";
@@ -23,7 +26,7 @@ export class ViewerAdapter {
     /** @returns {string} an id for the surface (e.g. "fsaverage"), stamped into exports. */
     surfaceId() { throw new Error("ViewerAdapter.surfaceId not implemented"); }
 
-    /** @returns {boolean} whether the surface is fully flattened (drawing is flat-only). */
+    /** @returns {boolean} whether the surface is fully flattened (ROI/sulcus drawing is flat-only). */
     isFlat() { throw new Error("ViewerAdapter.isFlat not implemented"); }
 
     /** @returns {{width:number, height:number}} the surface canvas size in CSS px. */
@@ -65,7 +68,8 @@ export class ViewerAdapter {
 
     /**
      * Create/replace a named overlay layer rendered INTO the surface (so it occludes and morphs
-     * like built-in ROIs). `shapes` carries, per shape, its `kind` ("roi" | "sulcus"), a label
+     * like built-in ROIs). `shapes` carries, per shape, its `kind` ("roi" | "sulcus" — points are
+     * never passed here; they are markers, see setPointMarkers), a label
      * vertex, a display color, and an editable flat-UV `bezier` the adapter renders as a cubic
      * path — closed for an ROI, open (no `Z`) for a sulcus. ROIs may also carry a boundary ring
      * (`outline`) used as a fallback for files predating the bezier.
@@ -106,6 +110,32 @@ export class ViewerAdapter {
     onMixChange(_cb) { throw new Error("ViewerAdapter.onMixChange not implemented"); }
 
     /* --- optional niceties (sensible defaults; override if the host supports them) ----- */
+
+    /** @returns {boolean} whether the surface has a flatmap (ROI/sulcus drawing needs one). */
+    hasFlat() { return true; }
+
+    /** @returns {boolean} whether pickVertex can answer yet (false while the host is still loading). */
+    canPick() { return false; }
+
+    /**
+     * The vertex under canvas px (x, y), at the CURRENT view and unfold mix — for placing a point.
+     * @returns {{h:string, g:number, xyz:[number,number,number]|null}|null} null over background
+     *   or when the host can't pick. `g` is a vertex index (see the coordinate conventions); `xyz`
+     *   is the vertex's base (anatomical) surface position.
+     */
+    pickVertex(_x, _y) { return null; }
+
+    /** @returns {[number,number,number]|null} base-surface position of vertex {h,g}, or null if this
+     *   mesh has no such vertex. Lets an import check a point file against THIS viewer's mesh. */
+    vertexPosition(_o) { return null; }
+
+    /**
+     * Render one marker per point ([{vert:{h,g}, color}]), replacing the previous set. Markers
+     * follow the surface morph. @returns {false|number} false while the host isn't ready (caller
+     * retries); otherwise how many points could NOT be drawn (their vertex isn't in this mesh), so
+     * the caller can say so rather than list points that never appear.
+     */
+    setPointMarkers(_points) { return 0; }
 
     /** Forward a click to the host's own picker (Shift-inspect while drawing). */
     inspectAt(_x, _y) {}
@@ -158,7 +188,7 @@ export class ViewerAdapter {
 }
 
 // The methods an implementation MUST provide (every one above that throws). The "optional niceties"
-// — inspectAt/zoom/pan/controlPanelRect/collapseControlPanel/setControlPanelVisible/
+// — hasFlat/canPick/pickVertex/vertexPosition/setPointMarkers/inspectAt/zoom/pan/controlPanelRect/collapseControlPanel/setControlPanelVisible/
 // applyHostDefaults/measureFrame/animateCamera/exportSulciMarkup/destroy — have working defaults.
 // Declared explicitly (not inferred from the source text) so the conformance test has a stable
 // contract to check against. Keep in sync when adding a required method.

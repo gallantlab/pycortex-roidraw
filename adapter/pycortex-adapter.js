@@ -12,10 +12,16 @@
  *   - svgo.update() rasterizes asynchronously; the surface fires "update" when the texture is
  *     swapped in (repaint then), and surfmix === the mix slider value.
  *   - dat.GUI control panel (gui.__folders) + LandscapeControls (setTarget/setRadius) + viewer.animate.
- * The overlay-layer conventions (viewBox coords, data-ptidx labels) are listed in pycortex-overlay.js.
+ * The overlay-layer conventions (viewBox coords, data-ptidx labels) are listed in pycortex-overlay.js;
+ * the point conventions (picker.get_vertex_index, picker.markers) in pycortex-points.js.
+ *
+ * A surface WITHOUT a flatmap (no json.flatlims: no uv, no SVG overlay — e.g. a make_static of a
+ * subject with only fiducial + inflated surfaces) is accepted: hasFlat() is false, isFlat() is then
+ * always false, and only points can be drawn. Every uv path below is reached only by flat tools.
  */
 import { ViewerAdapter } from "./viewer-adapter.js";
 import { PycortexOverlay } from "./pycortex-overlay.js";
+import { PycortexPoints } from "./pycortex-points.js";
 import { ndcToPixel } from "../core/geom.js";
 import { HEMIS } from "../core/hemis.js";
 import { TimerSet } from "../core/timer-set.js";
@@ -63,10 +69,10 @@ export function findSurface(viewer) {
 
 /*
  * What a located Surface still lacks for the adapter to work: [] once its pivots and both hemis'
- * position + uv geometry are built. Projection + selection iterate BOTH hemis and read each one's
- * position AND uv geometry, so every one is checked here instead of failing silently later.
- * Shared by preflightHost (the attach-time error) and surfaceReady (autoAttach's poll), so the
- * poll never attaches to a surface the constructor would then reject.
+ * position geometry are built. Projection iterates BOTH hemis and reads each one's positions, so
+ * every one is checked here instead of failing silently later. Shared by preflightHost (the
+ * attach-time error) and surfaceReady (autoAttach's poll), so the poll never attaches to a surface
+ * the constructor would then reject. Flat-UV is NOT required here — see flatProblems.
  */
 export function surfaceProblems(surface) {
     const missing = [];
@@ -76,7 +82,23 @@ export function surfaceProblems(surface) {
         const hemi = h[side];
         if (!hemi || !hemi.attributes) { missing.push(`surface.hemis.${side} (hemisphere geometry)`); continue; }
         if (!hemi.attributes.position) missing.push(`surface.hemis.${side}.attributes.position (vertex geometry)`);
-        if (!hemi.attributes.uv) missing.push(`surface.hemis.${side}.attributes.uv (flat-UV coords)`);
+    }
+    return missing;
+}
+
+/*
+ * What a surface lacks for the FLAT tools (ROI lasso, sulcus trace): [] when it has a flatmap —
+ * pycortex's flatlims, and both hemis' flat-UV coords, which selection and the overlay read. A
+ * surface with problems here still attaches; it just offers points only. pycortex builds uv in the
+ * same load callback as position, so this never flips after surfaceReady.
+ */
+export function flatProblems(surface) {
+    const missing = [];
+    if (surface.flatlims === undefined) missing.push("surface.flatlims (no flatmap in this viewer)");
+    const h = surface.hemis || {};
+    for (const side of HEMIS) {
+        const a = h[side] && h[side].attributes;
+        if (!a || !a.uv) missing.push(`surface.hemis.${side}.attributes.uv (flat-UV coords)`);
     }
     return missing;
 }
@@ -107,7 +129,7 @@ export function surfaceReady(viewer) {
 }
 
 export class PycortexAdapter extends ViewerAdapter {
-    constructor(viewer, { animSpeedFallback = DEFAULT_ANIM_SPEED } = {}) {
+    constructor(viewer, { animSpeedFallback = DEFAULT_ANIM_SPEED, pointRadius } = {}) {
         super();
         this.THREE = globalThis.THREE;
         this.mriview = globalThis.mriview;
@@ -119,12 +141,15 @@ export class PycortexAdapter extends ViewerAdapter {
         if (!pf.ok) throw new Error("[roidraw] incompatible pycortex viewer — missing: " + pf.missing.join("; "));
 
         this.surface = findSurface(viewer);
+        // pycortex builds uv in the same load callback as position, so this never flips after attach.
+        this._hasFlat = flatProblems(this.surface).length === 0;
         this.posdata = (this.surface.picker && this.surface.picker.posdata) || this._buildPosdata();
 
         this._animSpeedFallback = animSpeedFallback;
         this._v = new this.THREE.Vector3();
         this._mixWarned = false;
         this._overlay = new PycortexOverlay(this, { thickmix: DEFAULT_THICKMIX });
+        this._points = new PycortexPoints(this, { thickmix: DEFAULT_THICKMIX, radius: pointRadius });
         this._timers = new TimerSet();   // every poll/deferred teardown; destroy() cancels them
         this._onSetData = null;          // host listener installed by applyHostDefaults()
     }
@@ -137,7 +162,10 @@ export class PycortexAdapter extends ViewerAdapter {
         return (d && d.subject) || "unknown";
     }
 
-    isFlat() { return this._currentMix() >= FLAT_THRESHOLD; }
+    // Without a flatmap the mix slider's far end is the last surface (e.g. inflated), not flat.
+    hasFlat() { return this._hasFlat; }
+
+    isFlat() { return this.hasFlat() && this._currentMix() >= FLAT_THRESHOLD; }
 
     viewportSize() {
         const r = this.canvas().getBoundingClientRect();
@@ -170,6 +198,9 @@ export class PycortexAdapter extends ViewerAdapter {
         return 0;
     }
 
+    /* The live unfold mix (what get_position takes as surfmix). Not part of the contract. */
+    currentMix() { return this._currentMix(); }
+
     _flatOffY() { return (this.surface.flatoff && this.surface.flatoff[1]) || 0; }
 
     // Refresh the WHOLE pivot chain so each pivots[h].back.matrixWorld reflects the current mix,
@@ -191,12 +222,14 @@ export class PycortexAdapter extends ViewerAdapter {
         return { cam, surfmix: this._currentMix(), foy: this._flatOffY(), W: r.width, H: r.height };
     }
 
-    // One hemisphere's projection inputs: posdata, pivot world matrix, vertex count, flat-UV array.
+    // One hemisphere's projection inputs: posdata, pivot world matrix, vertex count, flat-UV array
+    // (null without a flatmap; only the uv paths read it, and only flat tools reach those).
     _hemiFrame(h) {
         const pd = this.posdata[h];
+        const uv = this.surface.hemis[h].attributes.uv;
         return {
             pd, mw: this.surface.pivots[h].back.matrixWorld, n: attrCount(pd.positions[0]),
-            uv: this.surface.hemis[h].attributes.uv.array,
+            uv: uv ? uv.array : null,
         };
     }
 
@@ -256,7 +289,7 @@ export class PycortexAdapter extends ViewerAdapter {
         const hemi = this.surface.hemis[o.h];
         if (!hemi) return null;
         const gi = hemi.indexMap[o.g]; // subject -> geometry-local
-        if (gi === undefined) return null;
+        if (gi === undefined || !hemi.attributes.uv) return null;
         const uv = hemi.attributes.uv.array;
         return [uv[gi * 2], uv[gi * 2 + 1]];
     }
@@ -408,11 +441,31 @@ export class PycortexAdapter extends ViewerAdapter {
 
     // --- overlay layer (occlusion-correct ROI rendering; see pycortex-overlay.js) --------
 
-    setOverlayLayer(name, shapes) { return this._overlay.setLayer(name, shapes); }
+    // Points never enter the SVG overlay (they are markers — see setPointMarkers). Without a
+    // flatmap there is no overlay at all: nothing to draw is success, anything else is refused
+    // loudly (the controller only lets points onto such a surface).
+    setOverlayLayer(name, shapes) {
+        const drawn = shapes.filter((s) => s.kind !== "point");
+        if (!this.hasFlat()) {
+            if (drawn.length) throw new Error("[roidraw] this surface has no flatmap — ROIs/sulci can't be drawn on it");
+            return true;
+        }
+        return this._overlay.setLayer(name, drawn);
+    }
 
     setLayerVisible(name, shapes, labels) { this._overlay.setVisible(name, shapes, labels); }
 
     exportSulciMarkup(sulci) { return this._overlay.exportSulciMarkup(sulci); }
+
+    // --- points (markers + picking; see pycortex-points.js) ------------------------------
+
+    setPointMarkers(points) { return this._points.setPoints(points); }
+
+    canPick() { return this._points.canPick(); }
+
+    pickVertex(x, y) { return this._points.pick(x, y); }
+
+    vertexPosition(o) { return o ? this._points.position(o.h, o.g) : null; }
 
     // --- host control panel + defaults ------------------------------------------------
 
@@ -467,6 +520,7 @@ export class PycortexAdapter extends ViewerAdapter {
         this._timers.clear();
         this._removeSetDataListener();
         this._overlay.destroy();
+        this._points.destroy();
     }
 
     // Rebuild posdata from hemi attributes if the picker's isn't available (mirrors pycortex).

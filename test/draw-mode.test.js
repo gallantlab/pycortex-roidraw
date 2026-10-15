@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert";
 import { DrawModeMachine } from "../core/draw-mode.js";
 
-// The DrawModeMachine is the pure state machine behind roidraw's flat-only Draw mode.
+// The DrawModeMachine is the pure state machine behind roidraw's Draw mode (flat-only for ROI/sulcus tools).
 // It owns exactly two pieces of state — the current mode ("display"|"draw") and the
 // "have we actually reached flat since the last flatten-for-draw" latch — and decides:
 //   - when entering Draw should the surface flatten,

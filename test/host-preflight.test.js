@@ -8,13 +8,13 @@
  */
 import test, { mock } from "node:test";
 import assert from "node:assert";
-import { preflightHost, surfaceReady, PycortexAdapter } from "../adapter/pycortex-adapter.js";
+import { preflightHost, surfaceReady, flatProblems, PycortexAdapter } from "../adapter/pycortex-adapter.js";
 import { safeColor } from "../adapter/pycortex-overlay.js";
 import { HEMIS } from "../core/hemis.js";
 
 // a fully-compatible synthetic host (no THREE/DOM — just the shape the adapter requires)
 function goodHost() {
-    const surface = { pivots: {}, hemis: {} };
+    const surface = { pivots: {}, hemis: {}, flatlims: [[0, 0], [1, 1]] };
     for (const h of HEMIS) surface.hemis[h] = { attributes: { position: {}, uv: {} } };
     return {
         THREE: {},
@@ -59,12 +59,19 @@ test("preflight flags a surface missing its position attribute", () => {
     assert.ok(r.missing.some((m) => /position/.test(m)), "should name the position attribute; got " + JSON.stringify(r.missing));
 });
 
-test("preflight flags a surface missing its uv attribute (the uv path would fail silently)", () => {
+test("a surface without uv still passes preflight (points only); flatProblems names the uv", () => {
     const h = goodHost();
     delete h.viewer.surfs[0].surf.hemis.left.attributes.uv;   // position present, uv gone
-    const r = preflightHost(h);
-    assert.strictEqual(r.ok, false);
-    assert.ok(r.missing.some((m) => /uv/.test(m)), "should name the uv attribute; got " + JSON.stringify(r.missing));
+    assert.strictEqual(preflightHost(h).ok, true, "a no-flatmap surface must attach (Point tool)");
+    const f = flatProblems(h.viewer.surfs[0].surf);
+    assert.ok(f.some((m) => /uv/.test(m)), "should name the uv attribute; got " + JSON.stringify(f));
+});
+
+test("flatProblems: [] with a flatmap; names flatlims when the viewer has none", () => {
+    const surf = goodHost().viewer.surfs[0].surf;
+    assert.deepStrictEqual(flatProblems(surf), []);
+    delete surf.flatlims;
+    assert.ok(flatProblems(surf).some((m) => /flatlims/.test(m)));
 });
 
 test("preflight flags a missing right hemisphere (projection iterates both)", () => {
@@ -85,7 +92,6 @@ test("surfaceReady agrees with preflight's surface checks (the poll never attach
     assert.strictEqual(surfaceReady(goodHost().viewer), true);
     for (const breakIt of [
         (surf) => { delete surf.hemis.right; },
-        (surf) => { delete surf.hemis.left.attributes.uv; },
         (surf) => { delete surf.hemis.right.attributes.position; },
     ]) {
         const h = goodHost();
@@ -143,6 +149,9 @@ function fakeHost() {
         hemis: { left: hemi(), right: hemi() },
         picker: { posdata: { left: { positions: [position] }, right: { positions: [position] } } },
         svg: svgo,
+        flatlims: [[0, 0], [1, 1]],
+        addEventListener(t, f) { (listeners["surf:" + t] = listeners["surf:" + t] || new Set()).add(f); },
+        removeEventListener(t, f) { if (listeners["surf:" + t]) listeners["surf:" + t].delete(f); },
     };
     const viewer = {
         surfs: [{ surf: surface }],
@@ -245,4 +254,14 @@ test("applyHostDefaults' setData listener is removed after the startup window, a
         b.destroy();   // idempotent
         assert.strictEqual(listeners.setData.size, 0);
     } finally { mock.timers.reset(); }
+}));
+
+test("a flatmap surface: setOverlayLayer never hands points to the SVG overlay", () => withHostGlobals(() => {
+    const { viewer } = fakeHost();
+    const a = new PycortexAdapter(viewer);
+    const seen = [];
+    a._overlay.setLayer = (n, s) => { seen.push(s.map((x) => x.kind)); return true; };
+    a.setOverlayLayer("drawn", [SULCUS, { kind: "point", name: "p", vert: { h: "left", g: 0 } }]);
+    assert.deepStrictEqual(seen, [["sulcus"]]);
+    a.destroy();
 }));

@@ -74,7 +74,7 @@ that no `d` closes, and that the labels layer holds no `<text>` — because `Lab
 `db.get_overlay(subject)` raise `TypeError`. It needs neither pycortex nor a subject, so it runs in
 CI. It is the closest thing to the round-trip below that can be automated here.
 
-### Draw-mode state machine — unit (the flat-only latch)
+### Draw-mode state machine — unit (the flat-only latch; the Point tool's no-flatten path)
 `core/draw-mode.js` (`test/draw-mode.test.js`) is the extracted pure state machine behind Draw mode.
 Its job is the subtle bit: the flatten **glide** emits many non-flat frames on its way to flat, and
 those must not bounce the user out of Draw — but a genuine inflate *after* reaching flat must. That

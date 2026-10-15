@@ -1,19 +1,21 @@
 /*
- * draw-panel.js — the drawing control panel (status, kind selector, shape list, export/import/clear,
+ * draw-panel.js — the drawing control panel (status, tool selector, shape list, export/import/clear,
  * message line). Host-agnostic; built from DOM nodes (names go through textContent, so a shape
  * named with HTML can't inject). Styling is in roidraw.css.
  */
 
 import { TOOL, asTool } from "../core/draw-mode.js";
 import { button } from "./dom-utils.js";
+import { describePoint } from "../core/shape-model.js";
 
 const noop = () => {};
 
 export class DrawPanel {
     // Every callback is normalized to a no-op once, here, so no call site has to guard.
-    constructor({ onExport, onExportSulci, onImport, onClear, onRemove, onEdit, onTool } = {}) {
+    constructor({ onExport, onExportSulci, onExportPoints, onImport, onClear, onRemove, onEdit, onTool } = {}) {
         this.onExport = onExport || noop;
         this.onExportSulci = onExportSulci || noop;
+        this.onExportPoints = onExportPoints || noop;
         this.onImport = onImport || noop;
         this.onClear = onClear || noop;
         this.onRemove = onRemove || noop;
@@ -24,17 +26,18 @@ export class DrawPanel {
         el.className = "roidraw-panel";
 
         const h = document.createElement("h2");
-        h.textContent = "Draw ROIs + sulci";
+        h.textContent = "Draw ROIs, sulci + points";
         el.appendChild(h);
 
-        // Which gesture a plain drag performs. An ROI is a closed lasso; a sulcus is an open trace.
+        // What the pointer draws. An ROI is a closed lasso; a sulcus is an open trace (both on the
+        // flatmap); a point is one click on the surface at any unfold.
         this.tool = TOOL.LASSO;
         const tools = document.createElement("div");
         tools.className = "roidraw-tools";
         tools.setAttribute("role", "group");
         tools.setAttribute("aria-label", "shape kind");
         this._toolBtns = {};
-        for (const [tool, label] of [[TOOL.LASSO, "ROI"], [TOOL.TRACE, "Sulcus"]]) {
+        for (const [tool, label] of [[TOOL.LASSO, "ROI"], [TOOL.TRACE, "Sulcus"], [TOOL.POINT, "Point"]]) {
             const b = button(label, () => this.setTool(tool), "roidraw-tools__btn");
             b.setAttribute("aria-pressed", String(tool === this.tool));
             this._toolBtns[tool] = b;
@@ -57,8 +60,9 @@ export class DrawPanel {
 
         el.appendChild(button("Export ROIs (JSON)", () => this.onExport(), "roidraw-action"));
         el.appendChild(button("Export sulci (SVG)", () => this.onExportSulci(), "roidraw-action"));
+        el.appendChild(button("Export points (JSON)", () => this.onExportPoints(), "roidraw-action"));
 
-        // Import reads the ROI JSON only. Sulci export is one-way, into pycortex's own overlays.svg.
+        // Import reads ROI JSON or points JSON. Sulci export is one-way, into pycortex's own overlays.svg.
         const lab = document.createElement("label");
         lab.textContent = "Import: ";
         const inp = document.createElement("input");
@@ -96,11 +100,24 @@ export class DrawPanel {
         }
     }
 
-    /* Select the active draw tool, reflect it, and notify the controller. */
+    /* Select the active draw tool, reflect it, and notify the controller. A disabled tool is refused. */
     setTool(tool) {
-        this.tool = asTool(tool);
+        const t = asTool(tool);
+        if (this._toolBtns[t].disabled) return;
+        this.tool = t;
         this._reflectTool();
         this.onTool(this.tool);
+    }
+
+    /* Enable/disable the flat tools (ROI, Sulcus). A surface without a flatmap offers points only;
+     * if a flat tool was selected, the selection moves to Point (and the controller is told). */
+    setFlatToolsEnabled(on) {
+        for (const t of [TOOL.LASSO, TOOL.TRACE]) {
+            const b = this._toolBtns[t];
+            b.disabled = !on;
+            b.title = on ? "" : "needs a flatmap — this surface has none";
+        }
+        if (!on && this.tool !== TOOL.POINT) this.setTool(TOOL.POINT);
     }
 
     /* The one-line hint under the heading. kind: "draw" (normal) | "warn" (flattening). */
@@ -122,7 +139,7 @@ export class DrawPanel {
     renderList(shapes, editingId = null) {
         const ed = editingId == null ? null : shapes.find((s) => s.id === editingId);
         this.doneEl.style.display = ed ? "" : "none";
-        if (ed) this.doneEl.textContent = "✓ Done editing “" + ed.name + "”";
+        if (ed) this.doneEl.textContent = (ed.kind === "point" ? "✕ Cancel moving “" : "✓ Done editing “") + ed.name + "”";
 
         const list = this.listEl;
         list.textContent = "";
@@ -136,6 +153,7 @@ export class DrawPanel {
         for (const s of shapes) {
             const editing = s === ed;
             const sulcus = s.kind === "sulcus";
+            const point = s.kind === "point";
             const row = document.createElement("div");
             row.className = "roidraw-roi" + (editing ? " roidraw-roi--editing" : "");
 
@@ -148,8 +166,8 @@ export class DrawPanel {
             // sulcus may share a name too — so the row states its kind.
             const kd = document.createElement("span");
             kd.className = "roidraw-roi__kind";
-            kd.textContent = sulcus ? "∿" : "◯";
-            kd.title = sulcus ? "sulcus" : "ROI";
+            kd.textContent = point ? "◉" : (sulcus ? "∿" : "◯");
+            kd.title = point ? "point" : (sulcus ? "sulcus" : "ROI");
             row.appendChild(kd);
 
             const nm = document.createElement("span");
@@ -159,25 +177,35 @@ export class DrawPanel {
 
             const ct = document.createElement("span");
             ct.className = "roidraw-roi__count";
-            // ROIs count enclosed vertices; a sulcus has no membership, so it counts its anchors.
-            ct.textContent = sulcus
-                ? String(s.bezier && s.bezier.anchors ? s.bezier.anchors.length : 0)
-                : String(s.left.length + s.right.length);
-            ct.title = sulcus ? "anchors" : "vertices";
+            // ROIs count enclosed vertices; a sulcus has no membership, so it counts its anchors; a
+            // point shows its hemisphere + vertex.
+            if (point) {
+                ct.textContent = (s.vert.h === "left" ? "L" : "R") + " " + s.vert.g;
+                ct.title = describePoint(s.vert, s.xyz);
+            } else {
+                ct.textContent = sulcus
+                    ? String(s.bezier && s.bezier.anchors ? s.bezier.anchors.length : 0)
+                    : String(s.left.length + s.right.length);
+                ct.title = sulcus ? "anchors" : "vertices";
+            }
             row.appendChild(ct);
 
-            // edit toggle — a real button (bigger hit target); only shapes with a bezier can edit.
-            // The controller re-checks the bezier: a disabled button is a UI courtesy, not a guard.
-            const edit = button(editing ? "editing" : "✎ edit", () => this.onEdit(editing ? null : s.id),
+            // edit toggle — a real button (bigger hit target). A curve edits its bezier; a point is
+            // moved by the next click. The controller re-checks: a disabled button is a UI courtesy.
+            const editable = point || !!s.bezier;
+            const edit = button(editing ? (point ? "moving" : "editing") : (point ? "✎ move" : "✎ edit"),
+                () => this.onEdit(editing ? null : s.id),
                 "roidraw-roi__editbtn" + (editing ? " roidraw-roi__editbtn--on" : ""));
-            edit.title = s.bezier ? (editing ? "finish editing" : "edit shape") : "no editable curve";
-            edit.disabled = !s.bezier;
+            if (!editable) edit.title = "no editable curve";
+            else if (point) edit.title = editing ? "cancel the move" : "click the surface to move this point";
+            else edit.title = editing ? "finish editing" : "edit shape";
+            edit.disabled = !editable;
             row.appendChild(edit);
 
             // a real <button> (keyboard-focusable + activatable), not an href-less <a>
             const del = button("✕", () => this.onRemove(s.id), "roidraw-roi__del");
             del.title = "remove";
-            del.setAttribute("aria-label", "remove " + (sulcus ? "sulcus " : "ROI ") + s.name);
+            del.setAttribute("aria-label", "remove " + (point ? "point " : sulcus ? "sulcus " : "ROI ") + s.name);
             row.appendChild(del);
 
             list.appendChild(row);

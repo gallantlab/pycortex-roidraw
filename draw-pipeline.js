@@ -175,7 +175,7 @@ export function labelForCurve(adapter, bezier) {
  * The stroke arrives in screen px and must be stored in view-independent flat-uv. At full flat the
  * flatmap is one plane, so uv->px is exactly a homography; we fit it from the (uv, px)
  * correspondences the adapter already produces and invert it. PRECONDITION: the surface is flat
- * (drawing is flat-only — see DrawModeMachine). Returns null on a degenerate stroke or a
+ * (ROI/sulcus drawing is flat-only — see DrawModeMachine). Returns null on a degenerate stroke or a
  * homography that won't fit (a collinear/degenerate view).
  */
 export function curveFromTrace(adapter, pts) {
